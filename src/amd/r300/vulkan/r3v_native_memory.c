@@ -16,15 +16,15 @@
 
 #include <radeon_drm.h>
 
-/* Memory type 0 is the GTT host-visible pool and type 1 the device-local
- * pool, matching the physical-device table.  RS48x is UMA, so the
- * device-local pool also admits GTT placement.
+/* The host-visible type uses GTT and the device-only type uses the
+ * device-local pool. RS48x is UMA, so the device-local pool also admits
+ * GTT placement.
  */
 static void
 r3v_native_memory_type_policy(uint32_t type_index, uint32_t *domains,
                               uint32_t *flags)
 {
-   if (type_index == 0) {
+   if (type_index == R3V_NATIVE_MEMORY_HOST_VISIBLE) {
       *domains = RADEON_GEM_DOMAIN_GTT;
       *flags = RADEON_GEM_CPU_ACCESS;
    } else {
@@ -199,7 +199,7 @@ r3v_GetDeviceBufferMemoryRequirements(
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size = pInfo->pCreateInfo->size,
       .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
-      .memoryTypeBits = 0x1,
+      .memoryTypeBits = R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS,
    };
    r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);
 }
@@ -211,15 +211,15 @@ r3v_GetBufferMemoryRequirements2(VkDevice _device,
 {
    VK_FROM_HANDLE(r3v_native_buffer, buffer, pInfo->buffer);
 
-   /* Type 0 alone: the draw's submission-time gather reads the bound
-    * buffer through a CPU mapping, and type 1 allocates with
+   /* The host-visible type alone supports the draw's submission-time
+    * gather through a CPU mapping; the device-only type allocates with
     * RADEON_GEM_NO_CPU_ACCESS, so an allocation the requirement admits
     * is always one the gather can map.
     */
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements){
       .size = buffer->vk.size,
       .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
-      .memoryTypeBits = 0x1,
+      .memoryTypeBits = R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS,
    };
    r3v_native_fill_buffer_dedicated_requirements(pMemoryRequirements);
 }
@@ -227,8 +227,8 @@ r3v_GetBufferMemoryRequirements2(VkDevice _device,
 /* Binding happens exactly once per buffer, at an aligned offset whose
  * buffer-sized footprint closes inside the allocation, to the one
  * host-visible type the requirement admits: the draw's submission-time
- * gather reads every bound buffer through a CPU mapping, and type 1
- * allocates with RADEON_GEM_NO_CPU_ACCESS.  Each bind runs the full
+ * gather reads every bound buffer through a CPU mapping, and the device-only
+ * type allocates with RADEON_GEM_NO_CPU_ACCESS. Each bind runs the full
  * admission, and the first refusal reports after every remaining bind
  * has been attempted, matching the image batch contract.
  */
@@ -254,7 +254,7 @@ r3v_BindBufferMemory2(VkDevice _device, uint32_t bindInfoCount,
       if (buffer == NULL || memory == NULL || buffer->memory != NULL ||
           memory->vk.base.device != &device->vk ||
           buffer->vk.base.device != &device->vk ||
-          memory->vk.memory_type_index != 0 ||
+          memory->vk.memory_type_index != R3V_NATIVE_MEMORY_HOST_VISIBLE ||
           offset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
           offset > memory->bo.size ||
           buffer->vk.size > memory->bo.size - offset) {

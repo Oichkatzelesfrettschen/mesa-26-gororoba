@@ -11,6 +11,8 @@
  * armed by the control cell's own digest.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <dlfcn.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -318,7 +320,7 @@ main(int argc, char **argv)
    VkMemoryAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = 65536,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    result = vkAllocateMemory(device, &alloc_info, NULL, &color_memory);

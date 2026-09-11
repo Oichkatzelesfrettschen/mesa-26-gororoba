@@ -45,6 +45,8 @@
  * fixture failure, 3 an oracle failure.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "amd/r300/common/r300_chip_identity.h"
 
 #include <dlfcn.h>
@@ -389,7 +391,7 @@ main(int argc, char **argv)
                         &(VkMemoryAllocateInfo){
                            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                            .allocationSize = allocation_bytes,
-                           .memoryTypeIndex = 0,
+                           .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                         },
                         NULL, &memory);
    if (r != VK_SUCCESS || vkBindBufferMemory(device, run.buffer, memory, 0) !=
@@ -502,7 +504,7 @@ main(int argc, char **argv)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = allocation_bytes,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &replacement) != VK_SUCCESS ||
           vkBindBufferMemory(device, run.buffer, replacement, 0) !=

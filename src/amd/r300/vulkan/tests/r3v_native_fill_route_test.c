@@ -268,7 +268,7 @@ scene_init(struct scene *s, const struct reference *ref)
    /* A live application mapping, so the transfer path reuses it and reaches
     * no DRM node while still running its real store loop. */
    s->memory.map = s->storage;
-   s->memory.vk.memory_type_index = 0;
+   s->memory.vk.memory_type_index = R3V_NATIVE_MEMORY_HOST_VISIBLE;
 
    s->buffer.memory = &s->memory;
    s->buffer.offset = 0;
@@ -572,7 +572,7 @@ test_declines_leave_the_command_buffer_untouched(const struct reference *ref)
        s.buffer.vk.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
    ARM("a range off the dword grid", s.copy->size = CELL_FILL_BYTES + 2);
    ARM("a range past the buffer", s.copy->size = CELL_ALLOCATION_BYTES * 2);
-   ARM("a device-local allocation", s.memory.vk.memory_type_index = 1);
+   ARM("a device-local allocation", s.memory.vk.memory_type_index = R3V_NATIVE_MEMORY_DEVICE_LOCAL);
 
    /* The submit shape and the command-buffer shape. */
    ARM("a second recorded fill", s.cmd.deferred_copy_count = 2);

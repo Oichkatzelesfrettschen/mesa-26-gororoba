@@ -11,6 +11,8 @@
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
 #undef NDEBUG
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 
 #include "amd/r300/cpu/r300_cpu_vertex.h"
@@ -178,7 +180,7 @@ main(void)
    VkMemoryAllocateInfo alloc = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = VERTEX_BYTES,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    assert(vkAllocateMemory(device, &alloc, NULL, &vertex_memory) ==
           VK_SUCCESS);

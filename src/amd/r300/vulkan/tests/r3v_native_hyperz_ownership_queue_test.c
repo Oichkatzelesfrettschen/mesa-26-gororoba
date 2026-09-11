@@ -10,6 +10,8 @@
 #undef NDEBUG
 
 #define VK_NO_PROTOTYPES
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_shim_arming.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
@@ -81,7 +83,7 @@ create_zmask_queue_test_image(VkDevice device, PFN_vkCreateImage create_image,
              &(VkMemoryAllocateInfo){
                 .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                 .allocationSize = requirements.size + requirements.alignment,
-                .memoryTypeIndex = 0u,
+                .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
              },
              NULL, &image.memory) == VK_SUCCESS);
    assert(bind_memory(device, image.handle, image.memory,
@@ -679,7 +681,7 @@ main(int argc, char **argv)
                 &(VkMemoryAllocateInfo){
                    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                    .allocationSize = requirements.size + requirements.alignment,
-                   .memoryTypeIndex = 0u,
+                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                 },
                 NULL, &image_memory) == VK_SUCCESS);
       assert(vkBindImageMemory(device, image, image_memory,

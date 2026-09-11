@@ -7,6 +7,8 @@
  * submit ioctl.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <dlfcn.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -263,7 +265,7 @@ run_burst_leg(VkInstance instance,
    VkMemoryAllocateInfo allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = carrier_bytes,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    result = vkAllocateMemory(device, &allocation, NULL, &carrier_memory);
    CHECK(result == VK_SUCCESS, "carrier vkAllocateMemory: %d", result);

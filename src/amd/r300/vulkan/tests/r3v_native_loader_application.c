@@ -14,6 +14,8 @@
 /* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
 #undef NDEBUG
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native_reference_spirv.h"
 
 #include "amd/r300/common/r300_chip_identity.h"
@@ -150,7 +152,7 @@ main(void)
    VkMemoryRequirements reqs;
    vkGetImageMemoryRequirements(device, image, &reqs);
    assert(reqs.size > 0 && reqs.size % 4 == 0 &&
-          (reqs.memoryTypeBits & 1) != 0);
+          (reqs.memoryTypeBits & R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS) != 0);
 
    VkDeviceMemory color_memory = VK_NULL_HANDLE;
    assert(vkAllocateMemory(device,
@@ -158,7 +160,7 @@ main(void)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = reqs.size + 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &color_memory) == VK_SUCCESS);
    assert(vkBindImageMemory(device, image, color_memory, 0) == VK_SUCCESS);
@@ -194,7 +196,7 @@ main(void)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &vertex_memory) == VK_SUCCESS);
    VkBuffer vertex_buffer = VK_NULL_HANDLE;

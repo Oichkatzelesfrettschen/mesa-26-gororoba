@@ -10,6 +10,8 @@
  * before it runs so a hang names the stage it hung in.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 
@@ -183,7 +185,7 @@ main(int argc, char **argv)
    VkMemoryAllocateInfo alloc = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = R3V_ATTENDED_VERTEX_BYTES,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;
    VkDeviceMemory color_memory = VK_NULL_HANDLE;

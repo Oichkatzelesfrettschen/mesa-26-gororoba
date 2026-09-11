@@ -250,14 +250,14 @@ main(int argc, char **argv)
        * constructs no memory object; the identical request succeeds once
        * the injection lifts, so the refusal left no device state behind. */
       inject_live = true;
-      allocate(device, 4096, 0, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+      allocate(device, 4096, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_ERROR_OUT_OF_DEVICE_MEMORY);
       inject_live = false;
-      VkDeviceMemory memory = allocate(device, 4096, 0, VK_SUCCESS);
+      VkDeviceMemory memory = allocate(device, 4096, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_SUCCESS);
       vkFreeMemory(device, memory, NULL);
       break;
    }
    case ARM_MAP_REFUSED: {
-      VkDeviceMemory memory = allocate(device, 8192, 0, VK_SUCCESS);
+      VkDeviceMemory memory = allocate(device, 8192, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_SUCCESS);
       inject_live = true;
       void *map = NULL;
       assert(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &map) ==
@@ -285,7 +285,7 @@ main(int argc, char **argv)
       break;
    }
    case ARM_MAPPED_RANGES: {
-      VkDeviceMemory memory = allocate(device, 4096, 0, VK_SUCCESS);
+      VkDeviceMemory memory = allocate(device, 4096, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_SUCCESS);
       void *map = NULL;
       assert(vkMapMemory(device, memory, 0, VK_WHOLE_SIZE, 0, &map) ==
              VK_SUCCESS);
@@ -326,12 +326,12 @@ main(int argc, char **argv)
       break;
    }
    case ARM_BIND_ADMISSION: {
-      VkDeviceMemory memory = allocate(device, 16384, 0, VK_SUCCESS);
+      VkDeviceMemory memory = allocate(device, 16384, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_SUCCESS);
       VkBuffer bound = create_buffer(device, 256);
       VkMemoryRequirements reqs;
       vkGetBufferMemoryRequirements(device, bound, &reqs);
       assert(reqs.alignment == R3V_NATIVE_MEMORY_ALIGNMENT &&
-             reqs.memoryTypeBits == 0x1 && reqs.size == 256);
+             reqs.memoryTypeBits == R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS && reqs.size == 256);
       assert(vkBindBufferMemory(device, bound, memory, 4096) == VK_SUCCESS);
       /* Rebinding, a misaligned offset, and a footprint past the end of
        * the allocation each refuse and leave the named buffer unbound. */
@@ -343,9 +343,9 @@ main(int argc, char **argv)
       VkBuffer overflowing = create_buffer(device, 256);
       assert(vkBindBufferMemory(device, overflowing, memory, 16384) ==
              R3V_NATIVE_REFUSAL_RESULT);
-      /* Type 1 allocates without CPU access, so the gather could never
+      /* The device-only type allocates without CPU access, so the gather could never
        * read a buffer bound there; the bind refuses it by type. */
-      VkDeviceMemory device_local = allocate(device, 4096, 1, VK_SUCCESS);
+      VkDeviceMemory device_local = allocate(device, 4096, R3V_NATIVE_MEMORY_DEVICE_LOCAL, VK_SUCCESS);
       assert(vkBindBufferMemory(device, misaligned, device_local, 0) ==
              R3V_NATIVE_REFUSAL_RESULT);
       /* Aliasing is admitted by construction: two buffers over
@@ -390,15 +390,15 @@ main(int argc, char **argv)
       assert(r3v_memory_properties_check(&m, m.memoryHeaps[0].size) ==
              R3V_MEMORY_PROPERTIES_OK);
       assert(m.memoryHeapCount == 1 && m.memoryTypeCount == 2);
-      assert(m.memoryTypes[0].propertyFlags &
+      assert(m.memoryTypes[R3V_NATIVE_MEMORY_HOST_VISIBLE].propertyFlags &
              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
-      assert(m.memoryTypes[1].propertyFlags ==
+      assert(m.memoryTypes[R3V_NATIVE_MEMORY_DEVICE_LOCAL].propertyFlags ==
              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
       VkPhysicalDeviceProperties properties;
       get_properties(pdev, &properties);
       /* 64 bytes is the K8 cache-line granule the CLFLUSH walk covers. */
       assert(properties.limits.nonCoherentAtomSize == 64);
-      VkDeviceMemory memory = allocate(device, 4096, 0, VK_SUCCESS);
+      VkDeviceMemory memory = allocate(device, 4096, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_SUCCESS);
       VkDeviceSize committed = 1;
       vkGetDeviceMemoryCommitment(device, memory, &committed);
       assert(committed == 0);
@@ -428,7 +428,7 @@ main(int argc, char **argv)
    case ARM_IMAGE_ALIAS_BINDING: {
       const VkImageUsageFlags transfer_usage =
          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-      VkDeviceMemory memory = allocate(device, 16384, 0, VK_SUCCESS);
+      VkDeviceMemory memory = allocate(device, 16384, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_SUCCESS);
       VkImage alias_a = VK_NULL_HANDLE;
       VkImage alias_b = VK_NULL_HANDLE;
       VkImage alias_window = VK_NULL_HANDLE;
@@ -448,7 +448,7 @@ main(int argc, char **argv)
       vkGetImageMemoryRequirements(device, alias_a, &reqs);
       assert(reqs.size == r3v_native_transfer_footprint_bytes(33, 33, 4) &&
              reqs.alignment == R3V_NATIVE_MEMORY_ALIGNMENT &&
-             reqs.memoryTypeBits == 0x1);
+             reqs.memoryTypeBits == R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS);
       /* Two identically-created images bound at one offset cover the same
        * window, so a write through the mapping reads back through both;
        * a third binds a disjoint aligned window of the same allocation. */
@@ -507,7 +507,7 @@ main(int argc, char **argv)
       break;
    }
    case ARM_KNOWN_BAD_RANGE_ADMITS: {
-      VkDeviceMemory memory = allocate(device, 4096, 0, VK_SUCCESS);
+      VkDeviceMemory memory = allocate(device, 4096, R3V_NATIVE_MEMORY_HOST_VISIBLE, VK_SUCCESS);
       assert(flush_one(device, memory, 4097, VK_WHOLE_SIZE) == VK_SUCCESS);
       vkFreeMemory(device, memory, NULL);
       break;

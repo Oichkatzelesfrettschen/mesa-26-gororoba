@@ -10,6 +10,7 @@
 #include "r3v_fill_route.h"
 #include "r3v_measurement_claim.h"
 #include "r3v_measurement_session.h"
+#include "r3v_memory_properties_contract.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_plan.h"
 #include "r3v_route_policy.h"

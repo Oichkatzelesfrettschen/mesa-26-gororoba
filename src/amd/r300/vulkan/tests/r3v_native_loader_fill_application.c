@@ -35,6 +35,8 @@
  * names.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "amd/r300/common/r300_chip_identity.h"
 #include "r3v_public_rb2d_fill_oracle.h"
 
@@ -322,7 +324,8 @@ main(int argc, char **argv)
    }
    VkMemoryRequirements reqs;
    vkGetBufferMemoryRequirements(device, buffer, &reqs);
-   if (reqs.size != CELL_ALLOCATION_BYTES || (reqs.memoryTypeBits & 1) == 0) {
+   if (reqs.size != CELL_ALLOCATION_BYTES ||
+       (reqs.memoryTypeBits & R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS) == 0) {
       fprintf(stderr, "buffer requirements: size %llu, types 0x%x\n",
               (unsigned long long)reqs.size, reqs.memoryTypeBits);
       return 2;
@@ -331,10 +334,11 @@ main(int argc, char **argv)
    vkGetPhysicalDeviceMemoryProperties(pdev, &memory_properties);
    const VkMemoryPropertyFlags host_visible =
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-   if (memory_properties.memoryTypeCount < 1 ||
-       (memory_properties.memoryTypes[0].propertyFlags & host_visible) !=
+   if (memory_properties.memoryTypeCount <= R3V_NATIVE_MEMORY_HOST_VISIBLE ||
+       (memory_properties.memoryTypes[R3V_NATIVE_MEMORY_HOST_VISIBLE]
+           .propertyFlags & host_visible) !=
           host_visible) {
-      fprintf(stderr, "memory type 0 is not host-visible and coherent\n");
+      fprintf(stderr, "mapped memory type lacks host visibility or coherence\n");
       return 2;
    }
 
@@ -343,7 +347,7 @@ main(int argc, char **argv)
                         &(VkMemoryAllocateInfo){
                            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                            .allocationSize = CELL_ALLOCATION_BYTES,
-                           .memoryTypeIndex = 0,
+                           .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                         },
                         NULL, &memory);
    if (r != VK_SUCCESS) {

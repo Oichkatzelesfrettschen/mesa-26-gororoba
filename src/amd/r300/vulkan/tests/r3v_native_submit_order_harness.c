@@ -17,6 +17,8 @@
 #undef NDEBUG
 
 #define VK_NO_PROTOTYPES
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_reference_spirv.h"
 #include "r3v_native_shim_arming.h"
@@ -874,7 +876,7 @@ run_arm(enum arm arm, const char *name)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = reqs.size + 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &target.memory) == VK_SUCCESS);
    assert(vkBindImageMemory(device, target.image, target.memory, 0) ==
@@ -901,7 +903,7 @@ run_arm(enum arm arm, const char *name)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = 4096,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &vertex_memory) == VK_SUCCESS);
    VkBuffer vertex_buffer = VK_NULL_HANDLE;
@@ -989,7 +991,7 @@ run_arm(enum arm arm, const char *name)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = 4096,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &color_memory) == VK_SUCCESS);
       assert(vkCreateBuffer(device,
@@ -1033,7 +1035,7 @@ run_arm(enum arm arm, const char *name)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = 4096,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &offset_memory) == VK_SUCCESS);
       assert(vkCreateBuffer(device,
@@ -1067,7 +1069,7 @@ run_arm(enum arm arm, const char *name)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = 4096,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &index_memory) == VK_SUCCESS);
       assert(vkCreateBuffer(device,
@@ -1180,7 +1182,7 @@ run_arm(enum arm arm, const char *name)
                                  .sType =
                                     VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                  .allocationSize = tex_reqs.size,
-                                 .memoryTypeIndex = 0,
+                                 .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                               },
                               NULL, &tex_memory) == VK_SUCCESS);
       assert(vkBindImageMemory(device, tex_image, tex_memory, 0) ==

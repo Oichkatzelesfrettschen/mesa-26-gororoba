@@ -10,6 +10,8 @@
  * kernel reads.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -175,7 +177,7 @@ main(int argc, char **argv)
                                    .sType =
                                       VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                    .allocationSize = 65536,
-                                   .memoryTypeIndex = 0,
+                                   .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                                 },
                                 NULL, &memory[i]);
       CHECK(result == VK_SUCCESS, "vkAllocateMemory %u: %d", i, result);

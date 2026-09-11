@@ -77,7 +77,7 @@ r3v_public_rb2d_fill_dso_mapped(const char *path)
 }
 
 /* The lowest host-visible memory type the buffer admits; the sealed
- * cell binds type 0 (host-visible, coherent GTT) and the wrapper holds
+ * cell binds host-visible, coherent GTT and the wrapper holds
  * the chosen index against its declaration. */
 static bool
 select_memory_type(struct r3v_public_rb2d_fill_scenario *s, uint32_t admitted)
