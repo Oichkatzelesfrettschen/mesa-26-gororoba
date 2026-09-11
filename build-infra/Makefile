@@ -504,7 +504,7 @@ endef
         review-thread-frontier-unit-test review-thread-corpus-check \
         review-thread-corpus-unit-test review-thread-reconciliation-check \
         review-thread-reconciliation-unit-test headless-hardware-gl-runner-test \
-        source-root-selection-test distcc-probe-directory-test \
+        source-root-selection-test distcc-setup-preflight-test distcc-probe-directory-test \
         distcc-gcc-major-probe-test \
         vostro-prefix-check audit configure build clean-registered-build clean clean-all distclean install \
         artifact-check test \
@@ -1006,6 +1006,7 @@ help:
 	@echo "  packaging-built-package-selection-test calibrate the repository entry against the recipe's own package list"
 	@echo "  loader-environment-function-scope-test preserve caller shell functions"
 	@echo "  source-root-selection-test calibrate external TOPSRC selection and path guards"
+	@echo "  distcc-setup-preflight-test calibrates IPv4 admission and read-only preflight behavior"
 	@echo "  distcc-probe-directory-test calibrates host-audit probe directory creation"
 	@echo "  distcc-gcc-major-probe-test calibrates remote C/C++ dispatch and GNU compiler identity"
 	@echo "  install           unprivileged build-owned experiment staging"
@@ -1111,6 +1112,33 @@ distcc-probe-directory-test:
 	esac; \
 	rmdir -- "$$probe_dir"; \
 	echo "OK    distcc probe directory accepts TMPDIR paths with spaces"
+
+distcc-setup-preflight-test:
+	@set -euo pipefail; \
+	tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf -- "$$tmpdir"' EXIT HUP INT TERM; \
+	mkdir -p -- "$$tmpdir/home/.distcc" "$$tmpdir/bin"; \
+	printf '%s\n' '10.0.0.141/4,lzo' > "$$tmpdir/home/.distcc/hosts"; \
+	printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$$0 version"' > "$$tmpdir/fake-tool"; \
+	chmod +x "$$tmpdir/fake-tool"; \
+	for tool in ccache distcc sccache rustc rustfmt clang-22 clang++-22; do \
+		ln -s -- "$$tmpdir/fake-tool" "$$tmpdir/bin/$$tool"; \
+	done; \
+	if ! HOME="$$tmpdir/home" PATH="$$tmpdir/bin:$$PATH" \
+		"$(TOPSRC)/build-infra/scripts/setup-distcc.sh" \
+		> "$$tmpdir/preflight.out" 2> "$$tmpdir/preflight.err"; then \
+		echo "FAIL  distcc setup preflight rejected a valid IPv4 volunteer" >&2; \
+		sed -n '1,20p' "$$tmpdir/preflight.err" >&2; \
+		exit 1; \
+	fi; \
+	grep -Fq 'distcc hosts: 10.0.0.141/4,lzo' "$$tmpdir/preflight.out" || { \
+		echo "FAIL  distcc setup preflight did not report the IPv4 volunteer" >&2; exit 1; \
+	}; \
+	if grep -Eq '(^|[[:space:]])rm([[:space:]]|$$)' \
+		"$(TOPSRC)/build-infra/scripts/setup-distcc.sh"; then \
+		echo "FAIL  distcc setup preflight contains a removal command" >&2; exit 1; \
+	fi; \
+	echo "OK    distcc setup preflight accepts IPv4 volunteers without removal commands"
 
 distcc-gcc-major-probe-test:
 	@set -euo pipefail; \
@@ -1219,7 +1247,10 @@ distcc-gcc-major-probe-test:
 		done; \
 		[ "$$remote_distcc_count" -gt 0 ] && [ "$$remote_distcc_failures" -eq 0 ]; \
 	}; \
-	getent() { return 0; }; \
+	getent() { \
+		case "$${2:-}" in unreachable.example) return 2 ;; esac; \
+		return 0; \
+	}; \
 	fake_probe_spec=""; \
 	distcc() { \
 		fake_probe_spec="$${DISTCC_HOSTS:-}"; output=""; \
@@ -1251,7 +1282,10 @@ distcc-gcc-major-probe-test:
 	test "$$(distcc_host_name '@localhost/2')" = localhost || { \
 		echo "FAIL  distcc host parser did not classify SSH localhost as local" >&2; exit 1; \
 	}; \
-	echo "OK    distcc host parser handles user, port, and option syntax"; \
+	test "$$(distcc_host_name '10.0.0.141/4,lzo')" = 10.0.0.141 || { \
+		echo "FAIL  distcc host parser did not preserve an IPv4 volunteer" >&2; exit 1; \
+	}; \
+	echo "OK    distcc host parser handles user, port, option, and IPv4 syntax"; \
 	client_compiler_dir="$$tmpdir/client-compilers"; mkdir -- "$$client_compiler_dir"; \
 	: > "$$client_compiler_dir/clang-22"; : > "$$client_compiler_dir/clang++-22"; \
 	chmod +x "$$client_compiler_dir/clang-22" "$$client_compiler_dir/clang++-22"; \
@@ -1267,18 +1301,35 @@ distcc-gcc-major-probe-test:
 	}; \
 	echo "OK    distcc probes mirror ccache and direct compiler forms"; \
 	: > "$$tmpdir/probe-tools"; \
-	DISTCC_HOSTS='+zeroconf @localhost/2 localhost/2 volunteer-a/1'; \
+	DISTCC_HOSTS='+zeroconf @localhost/2 localhost/2 10.0.0.141/4,lzo volunteer-a/1'; \
 	if ! probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir" "$$resolved_clangxx"; then \
 		echo "FAIL  LLVM C and C++ volunteer probes were rejected" >&2; exit 1; \
 	fi; \
-	test "$$remote_distcc_count" -eq 1 || { \
+	test "$$remote_distcc_count" -eq 2 || { \
 		echo "FAIL  discovery or SSH-local tokens were counted as remote volunteers" >&2; exit 1; \
 	}; \
-	printf '%s\n%s\n' "$$resolved_clang" "$$resolved_clangxx" | \
+	printf '%s\n%s\n%s\n%s\n' "$$resolved_clang" "$$resolved_clangxx" \
+		"$$resolved_clang" "$$resolved_clangxx" | \
 		cmp -s - "$$tmpdir/probe-tools" || { \
 		echo "FAIL  LLVM volunteer probes did not dispatch the exact C and C++ compiler forms" >&2; exit 1; \
 	}; \
-	echo "OK    LLVM probes skip discovery/local tokens and dispatch exact C/C++ compiler forms"; \
+	echo "OK    LLVM probes dispatch hostname and IPv4 volunteers with exact C/C++ compiler forms"; \
+	DISTCC_HOSTS='/4,lzo'; \
+	if probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir" "$$resolved_clangxx"; then \
+		echo "FAIL  malformed distcc volunteer was accepted" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 0 && test "$$remote_distcc_failures" -eq 0 || { \
+		echo "FAIL  malformed distcc volunteer entered the remote probe set" >&2; exit 1; \
+	}; \
+	echo "OK    malformed distcc volunteer fails closed"; \
+	DISTCC_HOSTS='unreachable.example/1'; \
+	if probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir" "$$resolved_clangxx"; then \
+		echo "FAIL  unreachable distcc volunteer was accepted" >&2; exit 1; \
+	fi; \
+	test "$$remote_distcc_count" -eq 1 && test "$$remote_distcc_failures" -eq 1 || { \
+		echo "FAIL  unreachable distcc volunteer did not fail its remote probe" >&2; exit 1; \
+	}; \
+	echo "OK    unreachable distcc volunteer fails closed"; \
 	DISTCC_HOSTS='volunteer-a/1'; \
 	if probe_all_distcc_hosts 22 "$$resolved_clang" llvm "$$probe_dir"; then \
 		echo "FAIL  LLVM volunteer passed without a C++ compiler probe" >&2; exit 1; \
@@ -1329,6 +1380,7 @@ audit: source-root-check source-root-control-unit-test python-interpreter-resolu
        review-thread-corpus-check review-thread-corpus-unit-test \
        loader-environment-function-scope-test \
        source-root-selection-test \
+       distcc-setup-preflight-test \
        distcc-probe-directory-test \
        distcc-gcc-major-probe-test \
        vostro-prefix-check audit-werror profile-audit \
@@ -1609,10 +1661,6 @@ audit: source-root-check source-root-control-unit-test python-interpreter-resolu
 	else ok "profile does not request Wayland platform"; fi; \
 	if command -v glslangValidator >/dev/null 2>&1; then ok "command glslangValidator"; else fail "missing command glslangValidator"; fi; \
 	if [ "$$distcc_active" = "1" ]; then \
-		if [ -r "$$HOME/.distcc/hosts" ]; then \
-			if grep -Eq '(^|[[:space:]])[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+([/:[:space:]]|$$)' "$$HOME/.distcc/hosts"; then fail "raw IPv4 address found in ~/.distcc/hosts; use mDNS hostnames"; \
-			else ok "distcc hosts use hostname policy"; fi; \
-		else warn "~/.distcc/hosts is missing; distcc builds may run locally only"; fi; \
 		if [ "$${MESA_DISTCC_JOBS:-}" = "$(DISTCC_JOBS)" ]; then \
 			ok "distcc aggregate build ceiling is $(DISTCC_JOBS) jobs"; \
 		else \
