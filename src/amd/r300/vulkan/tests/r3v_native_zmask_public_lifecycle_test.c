@@ -654,9 +654,14 @@ direct_fast_clear_read_valid(const struct r3v_native_cmd_buffer *native,
                word + 2u < end && native->ib[word + 1u] == 0u &&
                native->ib[word + 2u] == 64u)
          zmask_bind = word;
+      /* The prefix programs the plane equations at the level's own
+       * block, which the macrotiled single-sample level decides is 8x8;
+       * the suffix restores 4x4 once ZB_BW_CNTL clears, the
+       * compression-disabled configuration.  Only the word before the
+       * draw is the one this order checks. */
       else if (native->ib[word] == CP_PACKET0(R300_GB_Z_PEQ_CONFIG, 0) &&
                native->ib[word + 1u] ==
-                  R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4) {
+                  R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8) {
          if (draw_packet == UINT32_MAX)
             peq = word;
       } else if (native->ib[word] == CP_PACKET0(R300_ZB_BW_CNTL, 0)) {

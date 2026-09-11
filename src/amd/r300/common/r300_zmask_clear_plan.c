@@ -28,7 +28,11 @@ struct zmask_clear_stage_row {
    enum r300_zmask_clear_stage stage;
    uint32_t zb_bw_cntl;
    enum r300_zmask_compression block;
-   bool admits_8x8;
+   /* The stage binds the ZMASK RAM and clears it, so the coverage its
+    * 3D_CLEAR_ZMASK payload carries and the GB_Z_PEQ_CONFIG beside it
+    * follow the level's own block.  A stage that binds nothing programs
+    * neither register and stays at the pinned 4x4. */
+   bool binds_zmask;
    bool names_evidence_class;
    enum r300_zmask_evidence_class evidence_class;
    const char *name;
@@ -39,13 +43,13 @@ static const struct zmask_clear_stage_row stage_rows[] = {
     R300_ZMASK_EVIDENCE_FAST_CLEAR_SUBSTITUTION, "depth only"},
    {R300_ZMASK_CLEAR_STAGE_OWNERSHIP_ONLY, 0u, R300_ZCOMP_4X4, false, false,
     R300_ZMASK_EVIDENCE_FAST_CLEAR_SUBSTITUTION, "ownership only"},
-   {R300_ZMASK_CLEAR_STAGE_BIND_CLEAR, 0u, R300_ZCOMP_4X4, false, false,
+   {R300_ZMASK_CLEAR_STAGE_BIND_CLEAR, 0u, R300_ZCOMP_4X4, true, false,
     R300_ZMASK_EVIDENCE_FAST_CLEAR_SUBSTITUTION, "ZMASK bind and clear"},
    {R300_ZMASK_CLEAR_STAGE_FAST_FILL, R300_FAST_FILL_ENABLE, R300_ZCOMP_4X4,
-    false, true, R300_ZMASK_EVIDENCE_FAST_CLEAR_SUBSTITUTION,
+    true, true, R300_ZMASK_EVIDENCE_FAST_CLEAR_SUBSTITUTION,
     "ZMASK bind and clear with fast fill"},
    {R300_ZMASK_CLEAR_STAGE_READ_COMPRESSED,
-    R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE, R300_ZCOMP_4X4, false, true,
+    R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE, R300_ZCOMP_4X4, true, true,
     R300_ZMASK_EVIDENCE_COMPRESSED_READ, "ZMASK compressed read"},
    {R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED,
     R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE | R300_WR_COMP_ENABLE,
@@ -148,6 +152,14 @@ r300_zmask_clear_plan_build_at_block(enum r300_zmask_clear_stage stage,
        * than emitted at a coverage its register contradicts. */
       if (layout->zcomp8x8 != (block == R300_ZCOMP_8X8))
          return -EINVAL;
+      /* A stage whose word enables compression reads refuses a layout
+       * pinned below the block its level admits: RD_COMP_ENABLE sends
+       * every depth read through plane equations the pipe decodes at
+       * the level's own block, so the smaller metadata addresses a
+       * quarter of the tiles and the rest answer out of depth memory. */
+      if ((row->zb_bw_cntl & R300_RD_COMP_ENABLE) != 0u &&
+          r300_zmask_layout_below_admitted_block(layout))
+         return -EINVAL;
       plan.requires_hyperz_ownership = true;
       plan.writes_hyperz_registers = true;
       /* SC_HYPERZ stays unwritten: the scan converter's HiZ bit belongs
@@ -188,9 +200,16 @@ r300_zmask_fast_clear_plan_build(
        !surface->macrotile)
       return -EINVAL;
 
+   /* One block decision for the whole stream, read off the layout the
+    * image resolved: the clear seeds the RAM that the application draws
+    * read back under FAST_FILL_ENABLE | RD_COMP_ENABLE, so the coverage
+    * this packet carries and the plane equations those draws program
+    * follow one value. */
    struct r300_zmask_clear_plan bind_plan;
-   if (r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_FAST_FILL, layout,
-                                   &bind_plan) != 0)
+   if (r300_zmask_clear_plan_build_at_block(
+          R300_ZMASK_CLEAR_STAGE_FAST_FILL,
+          layout->zcomp8x8 ? R300_ZCOMP_8X8 : R300_ZCOMP_4X4, layout,
+          &bind_plan) != 0)
       return -EINVAL;
 
    uint32_t clear_word;
@@ -229,7 +248,7 @@ r300_zmask_clear_stage_admits_block(enum r300_zmask_clear_stage stage,
       return false;
    if (block == row->block)
       return true;
-   return block == R300_ZCOMP_8X8 && row->admits_8x8;
+   return block == R300_ZCOMP_8X8 && row->binds_zmask;
 }
 
 uint32_t
@@ -313,9 +332,13 @@ r300_zmask_clear_stages_self_check(void)
       } else if (row->zb_bw_cntl != 0u) {
          return -EINVAL;
       }
-      /* 8x8 opens where compressed writes do and nowhere else. */
-      if (row->admits_8x8 !=
-          ((row->zb_bw_cntl & R300_WR_COMP_ENABLE) != 0u))
+      /* A stage that puts the ZMASK in the depth path binds the RAM it
+       * reads, so no row enables a ZB_BW_CNTL bit without binding.  A
+       * stage that binds nothing programs neither the coverage nor the
+       * plane equations and keeps the pinned 4x4, which is the
+       * compression-disabled case the R5xx acceleration guide
+       * describes. */
+      if (row->zb_bw_cntl != 0u && !row->binds_zmask)
          return -EINVAL;
    }
    return 0;

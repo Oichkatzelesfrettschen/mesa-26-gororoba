@@ -25,11 +25,12 @@ int r300_zmask_materialize_prefix(
 int r300_zmask_materialize_suffix(struct r300_zmask_materialize_plan *out);
 
 /* Builds the complete register wrapper for a depth read that consumes a
- * ZMASK fast-clear value directly.  The prefix binds the 4x4 metadata and
- * enables FAST_FILL plus read compression; the suffix flushes the Z cache
- * and restores the compression-disabled state.  The compressed metadata
- * representation has a distinct lifecycle status and never reaches this
- * plan.
+ * ZMASK fast-clear value directly.  The prefix binds the metadata at the
+ * layout's own block and enables FAST_FILL plus read compression; the
+ * suffix flushes the Z cache and restores the compression-disabled
+ * state, where 4x4 plane equations are what the R5xx acceleration guide
+ * requires.  The compressed metadata representation has a distinct
+ * lifecycle status and never reaches this plan.
  */
 int r300_zmask_fast_clear_read_plan(
    const struct r300_zb_depth_surface *surface,

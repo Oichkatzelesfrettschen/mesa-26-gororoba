@@ -321,14 +321,19 @@ check_block_disagreement_refused(void)
    assert(eight.dwords == 4 && four.dwords == 16);
 
    /* Every stage pins 4x4, so the 8x8 layout is the known-bad at every
-    * binding stage for a caller that names no block; the compressed-write
-    * stage takes it only when the caller states R300_ZCOMP_8X8. */
+    * binding stage for a caller that names no block; a FAST_FILL stage
+    * takes it only when the caller states R300_ZCOMP_8X8.  The
+    * macrotiled level pinned to 4x4 builds where compression reads are
+    * off and refuses where they are on. */
    for (int s = R300_ZMASK_CLEAR_STAGE_BIND_CLEAR;
         s <= R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED; s++) {
       const enum r300_zmask_clear_stage stage =
          (enum r300_zmask_clear_stage)s;
+      const bool reads_compressed =
+         (r300_zmask_clear_stage_bw_cntl(stage) & R300_RD_COMP_ENABLE) != 0u;
       assert(r300_zmask_clear_plan_build(stage, &eight, &plan) == -EINVAL);
-      assert(r300_zmask_clear_plan_build(stage, &four, &plan) == 0);
+      assert(r300_zmask_clear_plan_build(stage, &four, &plan) ==
+             (reads_compressed ? -EINVAL : 0));
    }
 
    /* The refusal reads the layout's block, not its dword count: an 8x8
@@ -370,9 +375,13 @@ check_block_disagreement_refused(void)
 static void
 check_fast_clear_value_plan(const struct r300_zmask_layout *layout)
 {
+   /* r300_zmask_fast_clear_plan_build resolves the block off the layout,
+    * so the reference bind is the stage built at that same block. */
    struct r300_zmask_clear_plan bind_plan;
-   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_FAST_FILL, layout,
-                                      &bind_plan) == 0);
+   assert(r300_zmask_clear_plan_build_at_block(
+             R300_ZMASK_CLEAR_STAGE_FAST_FILL,
+             layout->zcomp8x8 ? R300_ZCOMP_8X8 : R300_ZCOMP_4X4, layout,
+             &bind_plan) == 0);
    struct r300_zmask_clear_plan plan;
    assert(r300_zmask_fast_clear_plan_build(
              &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, layout,
@@ -449,7 +458,12 @@ check_compressed_stages(void)
           (R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
            R300_WR_COMP_ENABLE));
 
-   /* Only the compressed-write stage opens the larger block. */
+   /* The larger block opens where a stage binds the ZMASK RAM -- C
+    * through F -- because the coverage the bind clears is read back
+    * through the plane equations the pipe decodes at the level's own
+    * block.  Stages A and B bind nothing and stay at the 4x4 the R5xx
+    * acceleration guide pins.  Every stage still answers 4x4 to a
+    * caller that names no block. */
    for (int s = R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY;
         s <= R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED; s++) {
       const enum r300_zmask_clear_stage stage =
@@ -457,36 +471,71 @@ check_compressed_stages(void)
       assert(r300_zmask_clear_stage_block(stage) == R300_ZCOMP_4X4);
       assert(r300_zmask_clear_stage_admits_block(stage, R300_ZCOMP_4X4));
       assert(r300_zmask_clear_stage_admits_block(stage, R300_ZCOMP_8X8) ==
-             (stage == R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED));
+             (stage >= R300_ZMASK_CLEAR_STAGE_BIND_CLEAR));
    }
    assert(!r300_zmask_clear_stage_admits_block(
       (enum r300_zmask_clear_stage)99, R300_ZCOMP_4X4));
 
+   /* Three levels: one resolved at the 8x8 its macrotiling admits, one
+    * macrotiled level pinned below that block, and one level whose own
+    * block is 4x4 because it carries no macrotiling. */
    const struct r300_zmask_layout eight = rs480_layout_at(true, R300_ZCOMP_8X8);
-   const struct r300_zmask_layout four = rs480_layout_at(true, R300_ZCOMP_4X4);
+   const struct r300_zmask_layout pinned_below =
+      rs480_layout_at(true, R300_ZCOMP_4X4);
+   const struct r300_zmask_layout four = rs480_layout_at(false, R300_ZCOMP_4X4);
+   assert(eight.admits_zcomp8x8 && eight.zcomp8x8);
+   assert(pinned_below.admits_zcomp8x8 && !pinned_below.zcomp8x8);
+   assert(!four.admits_zcomp8x8 && !four.zcomp8x8);
+   assert(r300_zmask_layout_below_admitted_block(&pinned_below));
+   assert(!r300_zmask_layout_below_admitted_block(&eight));
+   assert(!r300_zmask_layout_below_admitted_block(&four));
    struct r300_zmask_clear_plan plan;
 
-   /* The compressed-write stage at 8x8: the layout resolved at that
-    * block builds, the layout resolved at the other one refuses, and the
-    * plane-equation register follows the layout's own block. */
-   assert(r300_zmask_clear_plan_build_at_block(
-             R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED, R300_ZCOMP_8X8, &eight,
-             &plan) == 0);
-   assert(plan.words[4] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8);
-   assert(plan.words[9] == eight.dwords);
-   assert(r300_zmask_clear_plan_build_at_block(
-             R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED, R300_ZCOMP_8X8, &four,
-             &plan) == -EINVAL);
-   assert(r300_zmask_clear_plan_build_at_block(
-             R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED, R300_ZCOMP_4X4, &eight,
-             &plan) == -EINVAL);
-   assert(r300_zmask_clear_plan_build_at_block(
-             R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED, R300_ZCOMP_4X4, &four,
-             &plan) == 0);
-
-   /* Every stage below F refuses 8x8 whatever layout accompanies it. */
+   /* Each binding stage at 8x8: the layout resolved at that block
+    * builds, the layout resolved at the other one refuses, and
+    * GB_Z_PEQ_CONFIG and the 3D_CLEAR_ZMASK count both follow the
+    * layout's own block. */
    for (int s = R300_ZMASK_CLEAR_STAGE_BIND_CLEAR;
-        s <= R300_ZMASK_CLEAR_STAGE_READ_COMPRESSED; s++) {
+        s <= R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED; s++) {
+      const enum r300_zmask_clear_stage stage =
+         (enum r300_zmask_clear_stage)s;
+      assert(r300_zmask_clear_plan_build_at_block(stage, R300_ZCOMP_8X8,
+                                                  &eight, &plan) == 0);
+      assert(plan.words[4] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8);
+      assert(plan.words[9] == eight.dwords);
+      assert(r300_zmask_clear_plan_build_at_block(stage, R300_ZCOMP_8X8,
+                                                  &pinned_below,
+                                                  &plan) == -EINVAL);
+      assert(r300_zmask_clear_plan_build_at_block(stage, R300_ZCOMP_4X4,
+                                                  &eight, &plan) == -EINVAL);
+      /* A level whose own block is 4x4 builds at 4x4 at every stage. */
+      assert(r300_zmask_clear_plan_build_at_block(stage, R300_ZCOMP_4X4,
+                                                  &four, &plan) == 0);
+      assert(plan.words[4] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
+      assert(plan.words[9] == four.dwords);
+   }
+
+   /* Known-bad: a macrotiled level pinned to 4x4 under a word that sets
+    * RD_COMP_ENABLE.  The pipe decodes the level's own 8x8 equations
+    * while the metadata covers the smaller block, so the tile lookup
+    * addresses a quarter of the surface and the rest answers out of
+    * depth memory -- the pairing RS485M executed.  The stages that leave
+    * compression reads off carry no such contradiction and build. */
+   for (int s = R300_ZMASK_CLEAR_STAGE_BIND_CLEAR;
+        s <= R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED; s++) {
+      const enum r300_zmask_clear_stage stage =
+         (enum r300_zmask_clear_stage)s;
+      const bool reads_compressed =
+         (r300_zmask_clear_stage_bw_cntl(stage) & R300_RD_COMP_ENABLE) != 0u;
+      assert(r300_zmask_clear_plan_build_at_block(
+                stage, R300_ZCOMP_4X4, &pinned_below,
+                &plan) == (reads_compressed ? -EINVAL : 0));
+   }
+
+   /* Stages A and B bind nothing, so they refuse 8x8 whatever layout
+    * accompanies them and build their empty append at 4x4. */
+   for (int s = R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY;
+        s < R300_ZMASK_CLEAR_STAGE_BIND_CLEAR; s++) {
       assert(r300_zmask_clear_plan_build_at_block(
                 (enum r300_zmask_clear_stage)s, R300_ZCOMP_8X8, &eight,
                 &plan) == -EINVAL);
@@ -575,21 +624,29 @@ main(void)
    check_empty_stage(R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY, false, &layout);
    check_empty_stage(R300_ZMASK_CLEAR_STAGE_OWNERSHIP_ONLY, true, &layout);
    for (int mode = 0; mode <= 1; mode++) {
-      const struct r300_zmask_layout *l = mode == 0 ? &bound : &layout_4x4;
+      /* Stage C leaves the ZMASK out of the depth path, so it programs
+       * the pinned 4x4 over either level. */
+      const struct r300_zmask_layout *pinned =
+         mode == 0 ? &bound : &layout_4x4;
       check_bind_stage(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR, 0u,
                        R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
                           R300_WR_COMP_ENABLE,
-                       l);
+                       pinned);
+      /* Stages D through F put the ZMASK in the depth path, so each
+       * takes the level at its own block: the macrotiled level at 8x8
+       * and the untiled level at 4x4. */
+      const struct r300_zmask_layout *own =
+         mode == 0 ? &layout : &layout_4x4;
       check_bind_stage(R300_ZMASK_CLEAR_STAGE_FAST_FILL,
                        R300_FAST_FILL_ENABLE,
-                       R300_RD_COMP_ENABLE | R300_WR_COMP_ENABLE, l);
+                       R300_RD_COMP_ENABLE | R300_WR_COMP_ENABLE, own);
       check_bind_stage(R300_ZMASK_CLEAR_STAGE_READ_COMPRESSED,
                        R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE,
-                       R300_WR_COMP_ENABLE, l);
+                       R300_WR_COMP_ENABLE, own);
       check_bind_stage(R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED,
                        R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
                           R300_WR_COMP_ENABLE,
-                       0u, l);
+                       0u, own);
    }
    /* The compressed-write stage at the larger block emits the same word
     * layout over an 8x8 plane-equation register and an 8x8 coverage. */
@@ -601,16 +658,17 @@ main(void)
    check_refusals();
    check_block_disagreement_refused();
    check_z16_linear_cell_gap();
-   check_fast_clear_value_plan(&bound);
+   check_fast_clear_value_plan(&layout);
+   check_fast_clear_value_plan(&layout_4x4);
 
    printf("r300 zmask clear plan: six stages, ZMASK %u dwords at pitch %u\n",
-          bound.dwords, bound.stride_in_pixels);
+          layout_4x4.dwords, layout_4x4.stride_in_pixels);
    for (int s = R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY;
         s <= R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED; s++) {
       const enum r300_zmask_clear_stage stage =
          (enum r300_zmask_clear_stage)s;
       struct r300_zmask_clear_plan plan;
-      assert(r300_zmask_clear_plan_build(stage, &bound, &plan) == 0);
+      assert(r300_zmask_clear_plan_build(stage, &layout_4x4, &plan) == 0);
       enum r300_zmask_evidence_class evidence;
       printf("  %-38s %2u dwords, ownership %s, evidence %s\n",
              r300_zmask_clear_stage_name(stage), plan.dword_count,

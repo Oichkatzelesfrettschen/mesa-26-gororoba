@@ -151,8 +151,10 @@ cross_tie(const uint32_t *ib, uint32_t dwords)
    return kernel == CROSSCHECK_ADMIT && model == R300_ZB_HYPERZ_ADMIT;
 }
 
-/* The 64x64 Z24 reference level on one RS480 pipe, resolved at the block
- * the caller names. */
+/* The 64x64 Z24 reference level on one RS480 pipe at its own block:
+ * macrotiling is what admits 8x8, so the 4x4 level drops it and each
+ * layout carries the block its level decides rather than a pin below
+ * it. */
 static bool
 reference_layout(enum r300_zmask_compression block,
                  struct r300_zmask_layout *out)
@@ -163,7 +165,7 @@ reference_layout(enum r300_zmask_compression block,
       .depth_bytes_per_pixel = 4,
       .is_depth_or_stencil = true,
       .microtile = true,
-      .macrotile = true,
+      .macrotile = block == R300_ZCOMP_8X8,
       .num_samples = 1,
       .zcomp8x8_capable = true,
       .pipes = 1,
@@ -206,9 +208,11 @@ check_clear_plans(void)
       }
    }
 
+   /* The macrotiled surface's own layout, so the clear coverage the
+    * value plan carries is the one that surface's level decides. */
    struct r300_zmask_clear_plan fast;
    const int fast_built = r300_zmask_fast_clear_plan_build(
-      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four, 0x800000u,
+      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &eight, 0x800000u,
       0u, &fast);
    assert(fast_built == 0);
    if (fast_built == 0 && cross_tie(fast.words, fast.dword_count))
@@ -221,12 +225,16 @@ check_clear_plans(void)
 static uint32_t
 check_materialize_plans(void)
 {
-   struct r300_zmask_layout four;
-   if (!reference_layout(R300_ZCOMP_4X4, &four))
+   /* The macrotiled level at its own 8x8, which is the plan the public
+    * lifecycle submits: GB_Z_PEQ_CONFIG carries Z_PEQ_SIZE_8_8 there, a
+    * nonzero value the kernel gates on HyperZ ownership, so the
+    * cross-check judges the word the stream actually writes. */
+   struct r300_zmask_layout eight;
+   if (!reference_layout(R300_ZCOMP_8X8, &eight))
       return 0u;
    struct r300_zmask_materialize_plan prefix;
    const int prefix_built = r300_zmask_materialize_prefix(
-      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four, 0x800000u,
+      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &eight, 0x800000u,
       0u, &prefix);
    assert(prefix_built == 0);
    if (prefix_built != 0)
@@ -235,7 +243,7 @@ check_materialize_plans(void)
 
    struct r300_zmask_materialize_plan whole;
    const int whole_built = r300_zmask_fast_clear_read_plan(
-      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four, 0x800000u,
+      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &eight, 0x800000u,
       0u, &whole);
    assert(whole_built == 0);
    if (whole_built != 0)
@@ -456,16 +464,17 @@ check_authority_tables(void)
           !r300_kernel_admits_packet0_register(R300_ZB_ZMASK_RDINDEX);
 }
 
-/* The shape the run must produce.  Eight clear streams: six stages with
- * the compressed-write stage built at both blocks it admits, plus the
- * fast-clear value plan.  Three materialize streams: the prefix, the
- * whole read plan, and the suffix.  Five known-bads: the two index
- * registers, the out-of-range write, the unauthorized opcode, and the
- * control stream that differs from them only in the register it names.
+/* The shape the run must produce.  Eleven clear streams: six stages at
+ * 4x4, the four binding stages built again at the 8x8 they admit, plus
+ * the fast-clear value plan.  Three materialize streams: the
+ * prefix, the whole read plan, and the suffix.  Five known-bads: the
+ * two index registers, the out-of-range write, the unauthorized
+ * opcode, and the control stream that differs from them only in the
+ * register it names.
  * A check a reading refuses goes uncounted, so a mismatch fails through
  * the return value.
  */
-#define EXPECTED_CLEAR_STREAMS 8u
+#define EXPECTED_CLEAR_STREAMS 11u
 #define EXPECTED_MATERIALIZE_STREAMS 3u
 #define EXPECTED_KNOWN_BAD_CONFIRMATIONS 5u
 
