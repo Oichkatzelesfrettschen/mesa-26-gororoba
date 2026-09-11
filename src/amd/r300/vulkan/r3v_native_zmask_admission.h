@@ -152,7 +152,15 @@ struct r3v_native_zmask_automatic_candidate {
     * ZMASK representation answers.  Vulkan 1.0, Synchronization and Cache
     * Control, "Image Layout Transitions": a transition out of a matching
     * old layout preserves the range, so an operation the representation
-    * cannot answer would break that preservation. */
+    * cannot answer would break that preservation.
+    *
+    * r3v_native_zmask_plan_admit decides this fact for one recorded
+    * operation: a plan it routes to the ordinary path is an aspect
+    * operation the representation does not answer.  The caller supplies
+    * the answer as a bool rather than the predicate calling that
+    * function, because this decision is a pure function of the candidate
+    * description while the admission reads the representation a command
+    * buffer resolved. */
    bool aspect_operation_supported;
 
    /* ZB_BW_CNTL WR_COMP_ENABLE: compressed depth writes, refused at the

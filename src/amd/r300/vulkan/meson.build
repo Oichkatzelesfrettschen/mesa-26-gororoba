@@ -1475,6 +1475,20 @@ r3v_native_depth_pipeline_test = executable(
 test('r3v-native-depth-pipeline', r3v_native_depth_pipeline_test,
      suite : ['r3v'])
 
+r3v_native_zmask_plan_obligations_test = executable(
+  'r3v_native_zmask_plan_obligations_test',
+  files('tests/r3v_native_zmask_plan_obligations_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-zmask-plan-obligations',
+     r3v_native_zmask_plan_obligations_test,
+     suite : ['r3v'])
+
 r3v_native_zmask_fast_clear_selector_test = executable(
   'r3v_native_zmask_fast_clear_selector_test',
   files('tests/r3v_native_zmask_fast_clear_selector_test.c'),

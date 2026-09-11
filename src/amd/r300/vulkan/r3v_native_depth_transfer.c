@@ -348,13 +348,35 @@ r3v_native_record_depth_image_to_image_copy(
       return VK_ERROR_INITIALIZATION_FAILED;
 
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
-   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(
-          cmd_buffer, source_image) != VK_SUCCESS ||
-       r3v_native_cmd_buffer_require_ordinary_depth_backing(
-          cmd_buffer, destination_image) != VK_SUCCESS)
-      return VK_ERROR_INITIALIZATION_FAILED;
-
    const VkImageAspectFlags source_aspects = region->srcSubresource.aspectMask;
+   const struct r3v_native_zmask_plan_request source_request = {
+      .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_TRANSFER_READ,
+      .aspect_mask = r3v_native_depth_plan_aspect_mask(source_aspects),
+      .x = (uint32_t)region->srcOffset.x,
+      .y = (uint32_t)region->srcOffset.y,
+      .width = region->extent.width,
+      .height = region->extent.height,
+      .logical_width = source_image->depth_contract.logical_extent.width,
+      .logical_height = source_image->depth_contract.logical_extent.height,
+   };
+   const struct r3v_native_zmask_plan_request destination_request = {
+      .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_STORE,
+      .aspect_mask =
+         r3v_native_depth_plan_aspect_mask(region->dstSubresource.aspectMask),
+      .x = (uint32_t)region->dstOffset.x,
+      .y = (uint32_t)region->dstOffset.y,
+      .width = region->extent.width,
+      .height = region->extent.height,
+      .logical_width = destination_image->depth_contract.logical_extent.width,
+      .logical_height = destination_image->depth_contract.logical_extent.height,
+   };
+   VkResult backing_result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
+      cmd_buffer, source_image, &source_request, NULL);
+   if (backing_result == VK_SUCCESS)
+      backing_result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
+         cmd_buffer, destination_image, &destination_request, NULL);
+   if (backing_result != VK_SUCCESS)
+      return backing_result;
 
    const bool aligned = ((uint32_t)region->srcOffset.x % 32u) == 0u &&
                         ((uint32_t)region->srcOffset.y % 16u) == 0u &&
@@ -501,9 +523,24 @@ r3v_native_record_depth_image_copy(
       return VK_ERROR_INITIALIZATION_FAILED;
 
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, command_buffer);
-   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(
-          cmd_buffer, image) != VK_SUCCESS)
-      return VK_ERROR_INITIALIZATION_FAILED;
+   const struct r3v_native_zmask_plan_request plan_request = {
+      .operation = buffer_to_image
+                      ? R3V_NATIVE_ZMASK_PLAN_OPERATION_STORE
+                      : R3V_NATIVE_ZMASK_PLAN_OPERATION_TRANSFER_READ,
+      .aspect_mask =
+         r3v_native_depth_plan_aspect_mask(region->imageSubresource.aspectMask),
+      .x = (uint32_t)region->imageOffset.x,
+      .y = (uint32_t)region->imageOffset.y,
+      .width = region->imageExtent.width,
+      .height = region->imageExtent.height,
+      .logical_width = image->depth_contract.logical_extent.width,
+      .logical_height = image->depth_contract.logical_extent.height,
+   };
+   const VkResult backing_result =
+      r3v_native_cmd_buffer_require_ordinary_depth_backing(
+         cmd_buffer, image, &plan_request, NULL);
+   if (backing_result != VK_SUCCESS)
+      return backing_result;
 
    const bool depth = region->imageSubresource.aspectMask ==
                       VK_IMAGE_ASPECT_DEPTH_BIT;

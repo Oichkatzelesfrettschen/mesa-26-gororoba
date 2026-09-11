@@ -150,9 +150,21 @@ begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
       r3v_native_packed_depth_stencil_layout(layout) ==
          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL &&
       !depth_clear && !stencil_clear;
+   /* A ZB attachment access reads and rewrites the packed word, and Vulkan
+    * 1.0, Render Pass, Render Pass Store Operations leaves every location
+    * outside the render area with its previous value, so the whole logical
+    * surface owes ordinary depth bytes before the pass records. */
+   const struct r3v_native_zmask_plan_request depth_plan_request = {
+      .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_STORE,
+      .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
+      .width = depth_view->image->depth_contract.logical_extent.width,
+      .height = depth_view->image->depth_contract.logical_extent.height,
+      .logical_width = depth_view->image->depth_contract.logical_extent.width,
+      .logical_height = depth_view->image->depth_contract.logical_extent.height,
+   };
    if (!metadata_read_only)
       result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
-         cmd_buffer, depth_view->image);
+         cmd_buffer, depth_view->image, &depth_plan_request, NULL);
    if (result == VK_SUCCESS)
       result = r3v_native_cmd_buffer_transition_image_layout(
          cmd_buffer, depth_view->image, attachment->initial_layout, layout);
@@ -407,9 +419,19 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
          r3v_native_packed_depth_stencil_layout(depth_layout) ==
             VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL &&
          !depth_loads_clear;
+      const struct r3v_native_zmask_plan_request depth_plan_request = {
+         .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_STORE,
+         .aspect_mask = R300_ZB_COMBINED_CLEAR_ASPECTS,
+         .width = depth_view->image->depth_contract.logical_extent.width,
+         .height = depth_view->image->depth_contract.logical_extent.height,
+         .logical_width =
+            depth_view->image->depth_contract.logical_extent.width,
+         .logical_height =
+            depth_view->image->depth_contract.logical_extent.height,
+      };
       if (!metadata_read_only)
          state_result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
-            cmd_buffer, depth_view->image);
+            cmd_buffer, depth_view->image, &depth_plan_request, NULL);
       if (state_result == VK_SUCCESS)
          state_result = r3v_native_cmd_buffer_transition_image_layout(
             cmd_buffer, depth_view->image, pass->attachments[1].initial_layout,

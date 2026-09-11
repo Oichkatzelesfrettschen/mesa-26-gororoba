@@ -357,6 +357,91 @@ for the discrete R3xx and R5xx parts that carry HiZ RAM.
 Each stage keeps the ownership requirement stages C and D establish, and
 each is measured against A by the same two oracles.
 
+## Plan aspect obligations
+
+Stage D's substitution is what bounds which operations a ZMASK plan may
+carry. FASTFILL returns `ZB_DEPTHCLEARVALUE` in place of the value stored in
+depth memory for every tile whose ZMASK bits are zero, and that value is one
+packed D24S8 word, so the substitution replaces the depth aspect and the
+stencil aspect of every pixel of the surface together. An operation whose
+own semantics leave either aspect, or any pixel outside its region, holding
+its previous value cannot be expressed as that substitution, and resolves
+through materialization onto the ordinary depth path.
+
+The Vulkan side of the boundary rests on three clauses of the 1.0 core
+specification. Vulkan 1.0, Resource Creation, Image Layouts stores an
+optimal-layout image in an implementation-dependent opaque layout and makes
+image layout per-image subresource, so the ZMASK representation is a legal
+storage form and both aspects of one subresource share it. Vulkan 1.0,
+Resource Creation, Image Views defines `VkImageSubresourceRange` and
+`VkImageSubresourceLayers` `aspectMask`, through which an operation names
+the depth aspect, the stencil aspect, or both. Vulkan 1.0, Render Pass,
+Render Pass Store Operations states that a store updates values within the
+render area alone and that, for a depth/stencil image, a write to one aspect
+may result in a read-modify-write of the other -- which the packed D24S8
+word makes unconditional on this part. Vulkan 1.0, Clear Commands, Clearing
+Images Outside a Render Pass Instance supplies the one shape that meets the
+substitution: `vkCmdClearDepthStencilImage` writes a constant over whole mip
+levels of the aspects its ranges name.
+
+`struct r3v_native_zmask_plan_obligations` declares the seven facts an
+operation carries, `r3v_native_zmask_plan_obligations_init` derives them
+from the operation kind, aspect mask, logical region, and representation,
+and `r3v_native_zmask_plan_admit` returns the route.
+
+The automatic selection gate states the same boundary as one clause of its
+admission predicate. Its `supported-aspect-operations` clause reads the
+candidate's `aspect_operation_supported`, and `r3v_native_zmask_plan_admit`
+is what decides that fact for a recorded operation: a plan the admission
+routes to the ordinary path is an aspect operation the ZMASK
+representation does not answer. The two stay separate declarations because
+the gate decides over a frozen candidate with no driver state, while the
+admission reads the representation a command buffer resolved.
+
+| Operation | Aspects | Region | Route |
+| --- | --- | --- | --- |
+| clear | depth + stencil | whole surface | ZMASK fast clear |
+| clear | depth | any | ordinary through materialization |
+| clear | stencil | any | ordinary through materialization |
+| clear | depth + stencil | subrectangle | ordinary through materialization |
+| store | any | any | ordinary through materialization |
+| transfer read | any | any | ordinary through materialization |
+
+`requires_materialization` stands apart from the route and names a
+metadata-backed representation -- `ZMASK_FAST_CLEAR` or `ZMASK_COMPRESSED`
+-- whose ordinary path resolves the metadata into depth memory first. It
+holds for a fast-clear-admitted operation that the caller records through
+the ordinary route, which is how a full both-aspect clear of a
+metadata-backed image reaches the RB2D fill.
+`r3v_native_cmd_buffer_require_ordinary_depth_backing` is the single point
+that applies it: a retired tiled image passes through, a `ZMASK_FAST_CLEAR`
+image materializes, and a `ZMASK_COMPRESSED` image refuses with
+`VK_ERROR_FEATURE_NOT_PRESENT` because no compressed resolve route exists.
+
+### Operations that stay on the ordinary path
+
+Each row below stays ordinary until a separate demonstration moves it, and
+each names what that demonstration would have to establish.
+
+- Depth-only and stencil-only clears. The substitution writes both halves of
+  the packed word, so a single-aspect plan needs a ZMASK-side mechanism that
+  leaves the other half alone. None is in this tree.
+- Partial clears. `3D_CLEAR_ZMASK` covers a dword range of the ZMASK RAM,
+  and each dword covers a compression block, so a rectangle that splits a
+  block has no exact ZMASK expression. A demonstration would need the
+  block-aligned subrectangle case measured on silicon.
+- Partial stores and attachment access. A ZB draw reads and rewrites the
+  packed word, and store operations leave every location outside the render
+  area untouched, so the surface owes ordinary depth bytes for the whole
+  logical extent before the pass records.
+- Transfers that read one aspect of a metadata-backed image. The host reads
+  depth memory directly and the ZMASK resolve does not intercept that read,
+  so the metadata resolves into memory first.
+- Compressed representations. `RD_COMP_ENABLE` and `WR_COMP_ENABLE` are off
+  through stages C and D, so no compressed tile is ever produced and no
+  resolve for one exists. The refusal is explicit rather than silent.
+||||||| 89fead4ca63
+
 ## Automatic selection
 
 Standing selection of the fast clear over the ordinary combined clear is
