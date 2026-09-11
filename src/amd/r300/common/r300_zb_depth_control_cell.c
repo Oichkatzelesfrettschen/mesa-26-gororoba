@@ -7,6 +7,7 @@
 #include "r300_pm4_builder.h"
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_zb_depth_state.h"
+#include "r300_zmask_materialize_plan.h"
 
 #include "r300_reg.h"
 #include "util/macros.h"
@@ -43,6 +44,13 @@ const float
       36.0f,  8.0f, R300_ZB_DEPTH_CONTROL_FAR_Z,  1.0f,
       60.0f,  8.0f, R300_ZB_DEPTH_CONTROL_FAR_Z,  1.0f,
       48.0f, 56.0f, R300_ZB_DEPTH_CONTROL_FAR_Z,  1.0f,
+};
+
+const float
+   r300_zmask_materialize_vertices[R300_ZMASK_MATERIALIZE_VERTEX_DWORDS] = {
+      0.0f,   0.0f, 0.0f, 1.0f,
+      128.0f, 0.0f, 0.0f, 1.0f,
+      0.0f, 128.0f, 0.0f, 1.0f,
 };
 
 static void
@@ -133,6 +141,11 @@ r300_zb_depth_control_emit_into(
        surface->allocation_rows != R300_ZB_DEPTH_CONTROL_ALLOCATION_ROWS)
       return -EINVAL;
 
+   const bool materializes_zmask = params->zmask_materialize_plan != NULL;
+   if (materializes_zmask &&
+       surface != &r300_zb_depth_surface_rs485m_z24_macrotiled_logical)
+      return -EINVAL;
+
    struct r300_pm4_builder b;
    r300_pm4_builder_init(&b, words, capacity);
 
@@ -207,7 +220,9 @@ r300_zb_depth_control_emit_into(
       .depth_relocation_payload =
          DEPTH_CONTROL_RELOC_PAYLOAD(R300_ZB_DEPTH_CONTROL_SLOT_DEPTH),
       .depth_function = params->test_options ? params->test_options->depth_function : R300_ZS_LESS,
-      .depth_write = params->test_options ? params->test_options->depth_write : true,
+      .depth_write = materializes_zmask ? false :
+         (params->test_options ? params->test_options->depth_write : true),
+      .depth_test_disabled = materializes_zmask,
    };
    uint32_t depth_reloc_index = R300_PM4_NO_INDEX;
    const int depth_rc =
@@ -215,6 +230,16 @@ r300_zb_depth_control_emit_into(
    if (depth_rc != 0 && b.error == 0)
       b.error = depth_rc;
    record_depth_site(&b, out, depth_reloc_index);
+
+   if (materializes_zmask) {
+      /* R300 decompression is the one internal state that writes depth with
+       * the public depth test disabled.  Stencil remains disabled, so the
+       * packed low byte survives the depth write.
+       */
+      r300_pm4_reg(&b, R300_ZB_CNTL, R300_Z_WRITE_ENABLE);
+      r300_pm4_block(&b, params->zmask_materialize_plan->words,
+                     params->zmask_materialize_plan->begin_dword_count);
+   }
 
    /* Vertex fetch: one array, sixteen bytes per vertex, stride sixteen. */
    const uint32_t vbpntr[3] = {
@@ -229,9 +254,12 @@ r300_zb_depth_control_emit_into(
    /* One triangle list of six vertices: the array pointer is the draw's
     * only start, so both triangles ride one walk and one LOAD_VBPNTR.
     */
+   const uint32_t vertex_count = materializes_zmask
+                                    ? R300_ZMASK_MATERIALIZE_VERTEX_COUNT
+                                    : DEPTH_CONTROL_VERTEX_COUNT;
    const uint32_t draw =
       R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_PRIM_WALK_LIST |
-      (DEPTH_CONTROL_VERTEX_COUNT << R300_PRIM_NUM_VERTICES_SHIFT);
+      (vertex_count << R300_PRIM_NUM_VERTICES_SHIFT);
    r300_pm4_packet3(&b, R300_PACKET3_3D_DRAW_VBUF_2, &draw, 1);
 
    /* Destination-cache publication retires the color writes before the IB
@@ -243,9 +271,17 @@ r300_zb_depth_control_emit_into(
    r300_pm4_reg(&b, R300_RB3D_DSTCACHE_CTLSTAT,
                 R300_RB3D_DSTCACHE_CTLSTAT_DC_FLUSH_FLUSH_DIRTY_3D |
                    R300_RB3D_DSTCACHE_CTLSTAT_DC_FREE_FREE_3D_TAGS);
-   r300_pm4_reg(&b, R300_ZB_ZCACHE_CTLSTAT,
-                R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
-                   R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+   if (materializes_zmask) {
+      r300_pm4_block(
+         &b,
+         r300_zmask_materialize_end_words(params->zmask_materialize_plan),
+         r300_zmask_materialize_end_dword_count(
+            params->zmask_materialize_plan));
+   } else {
+      r300_pm4_reg(&b, R300_ZB_ZCACHE_CTLSTAT,
+                   R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+                      R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE);
+   }
 
    const int rc = r300_pm4_builder_finish(&b, &out->ib_size_dwords);
    if (rc != 0) {
@@ -434,6 +470,38 @@ r300_zb_depth_tiled_validation_emit(bool depth_write,
    }
    r300_fragment_binary_finish(&fs);
    return rc;
+}
+
+int
+r300_zb_depth_zmask_materialize_emit(
+   const struct r300_zmask_materialize_plan *plan,
+   uint32_t depth_offset_bytes, uint32_t vertex_offset,
+   uint32_t color_pitch_format, struct r300_zb_depth_control_ib *out)
+{
+   if (plan == NULL || out == NULL)
+      return -EINVAL;
+
+   struct r300_fragment_binary fragment_binary;
+   int result = r300_tcl_bypass_triangle_reference_fs(&fragment_binary);
+   if (result != 0)
+      return result;
+
+   struct r300_first_draw_contract first_draw_contract;
+   result = r300_zb_depth_control_reference_contract(&first_draw_contract);
+   if (result == 0) {
+      const struct r300_zb_depth_control_params params = {
+         .vertex_offset = vertex_offset,
+         .color_pitch_format = color_pitch_format,
+         .depth_offset_bytes = depth_offset_bytes,
+         .surface = &r300_zb_depth_surface_rs485m_z24_macrotiled_logical,
+         .fragment_binary = &fragment_binary,
+         .first_draw_contract = &first_draw_contract,
+         .zmask_materialize_plan = plan,
+      };
+      result = r300_zb_depth_control_emit(&params, out);
+   }
+   r300_fragment_binary_finish(&fragment_binary);
+   return result;
 }
 
 uint32_t

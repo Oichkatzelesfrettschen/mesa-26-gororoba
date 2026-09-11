@@ -11,6 +11,8 @@
 
 #include "r3v_entrypoints.h"
 
+#include "amd_family.h"
+
 #include "vk_log.h"
 #include "vk_util.h"
 
@@ -129,6 +131,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    bool transfer_family = false;
    bool depth_family = false;
    struct r3v_native_depth_image_contract depth_contract = {0};
+   struct r300_zmask_layout zmask_layout = {0};
+   bool zmask_layout_admitted = false;
    uint32_t row_pitch_bytes;
    enum r300_triangle_lane_order lanes = R300_TRIANGLE_LANES_B8G8R8A8;
    if (pCreateInfo->format == VK_FORMAT_D24_UNORM_S8_UINT) {
@@ -173,6 +177,26 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
          return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
       depth_family = true;
       row_pitch_bytes = 0u;
+      if (depth_contract.logical_extent.width == 64u &&
+          depth_contract.logical_extent.height == 64u) {
+         const struct r300_zmask_layout_params zmask_params = {
+            .stride_in_pixels = depth_contract.layout.pitch_pixels,
+            .height = depth_contract.surface.height,
+            .depth_bytes_per_pixel = depth_contract.layout.bytes_per_pixel,
+            .is_depth_or_stencil = true,
+            .microtile = depth_contract.layout.microtile_width != 0u,
+            .macrotile = depth_contract.layout.macrotile_width != 0u,
+            .num_samples = 1u,
+            .zcomp8x8_capable = r300_zmask_zcomp8x8_capable(CHIP_RS480),
+            .pipes = 1u,
+            .zmask_ram_dwords_per_pipe =
+               r300_zmask_ram_dwords_per_pipe(CHIP_RS480),
+         };
+         if (r300_zmask_layout_compute_at_block(
+                &zmask_params, R300_ZCOMP_4X4, &zmask_layout) != 0)
+            return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
+         zmask_layout_admitted = zmask_layout.fits_zmask_ram;
+      }
    } else if (pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
       /* The sampled bit joins the attachment bit over one layout: the
        * 64-byte row alignment the sampling family already executes is a
@@ -289,6 +313,8 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
    };
    image->memory = NULL;
    image->memory_offset = 0;
+   image->zmask_layout = zmask_layout;
+   image->zmask_layout_admitted = zmask_layout_admitted;
    *pImage = r3v_native_image_to_handle(image);
    return VK_SUCCESS;
 }
@@ -302,6 +328,8 @@ r3v_DestroyImage(VkDevice _device, VkImage _image,
 
    if (image == NULL)
       return;
+   if (device->zmask_owner.image == image)
+      device->zmask_owner = (struct r3v_native_zmask_owner_state){0};
    vk_object_free(&device->vk, pAllocator, image);
 }
 

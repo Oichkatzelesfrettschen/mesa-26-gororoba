@@ -493,6 +493,8 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
                                bool z_top_enable,
                                const struct r300_zb_combined_clear_plan
                                   *depth_clear,
+                               const struct r300_zmask_materialize_plan
+                                  *zmask_fast_clear_read,
                                bool color_writes_disabled,
                                struct r300_tcl_bypass_triangle_ib
                                   *alternate_carrier_out)
@@ -570,6 +572,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       emit_result = r300_tcl_bypass_triangle_insert_depth_state(&cell,
                                                                 depth_state,
                                                                 z_top_enable);
+   if (emit_result == 0 && zmask_fast_clear_read != NULL)
+      emit_result = r300_tcl_bypass_triangle_insert_zmask_fast_clear_read(
+         &cell, zmask_fast_clear_read);
    if (emit_result == 0 && ordered_stencil)
       emit_result =
          !clip_space
@@ -590,6 +595,9 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       if (emit_result == 0 && depth_state != NULL)
          emit_result = r300_tcl_bypass_triangle_insert_depth_state(
             alternate_carrier_out, depth_state, z_top_enable);
+      if (emit_result == 0 && zmask_fast_clear_read != NULL)
+         emit_result = r300_tcl_bypass_triangle_insert_zmask_fast_clear_read(
+            alternate_carrier_out, zmask_fast_clear_read);
       if (emit_result == 0 && ordered_stencil)
          emit_result = r300_tcl_bypass_triangle_split_ordered_stencil(
             alternate_carrier_out, triangle_count,
@@ -603,6 +611,10 @@ emit_and_install_triangle_cell(struct r3v_native_device *device,
       emit_result = r300_tcl_bypass_triangle_insert_depth_state(&window_cell,
                                                                 depth_state,
                                                                 z_top_enable);
+   if (emit_result == 0 && zmask_fast_clear_read != NULL &&
+       retain_window_cell)
+      emit_result = r300_tcl_bypass_triangle_insert_zmask_fast_clear_read(
+         &window_cell, zmask_fast_clear_read);
    if (emit_result == 0 && depth_state != NULL && depth_clear != NULL &&
        retain_window_cell)
       emit_result = prepend_depth_clear(depth_clear, &window_cell);
@@ -813,7 +825,8 @@ record_triangle_cell_tail(struct r3v_native_device *device,
    return emit_and_install_triangle_cell(device, cmd_buffer, vertex_memory,
                                          color_memory, &shape, false, false,
                                          false, false, false, false, 0, 1, NULL,
-                                         NULL, NULL, false, NULL, false, NULL);
+                                         NULL, NULL, false, NULL, NULL, false,
+                                         NULL);
 }
 
 VkResult
@@ -831,6 +844,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    const struct r3v_native_depth_image_bound *depth_bound,
    const struct r3v_native_depth_pipeline_state *depth_pipeline,
    const struct r300_zb_combined_clear_plan *depth_clear,
+   const struct r300_zmask_materialize_plan *zmask_fast_clear_read,
    bool color_writes_disabled,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell)
 {
@@ -912,7 +926,7 @@ r3v_native_record_tcl_bypass_triangle_carrier(
                                          selected_depth_state,
                                          depth_pipeline != NULL &&
                                             depth_pipeline->early_fragment_tests,
-                                         depth_clear,
+                                         depth_clear, zmask_fast_clear_read,
                                          color_writes_disabled,
                                          alternate_carrier_cell);
 }

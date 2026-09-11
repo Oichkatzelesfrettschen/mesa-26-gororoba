@@ -230,7 +230,8 @@ check_timeline_wait_consumption(void)
    f(vkCmdDraw) f(vkCmdDrawIndexed)                                      \
    f(vkCmdCopyBuffer) f(vkCmdCopyBufferToImage) f(vkCmdCopyImage)          \
    f(vkCmdCopyImageToBuffer) f(vkCmdFillBuffer)                            \
-   f(vkCmdClearColorImage) f(vkCmdPipelineBarrier)                         \
+   f(vkCmdClearColorImage) f(vkCmdClearDepthStencilImage)                  \
+   f(vkCmdPipelineBarrier)                                                 \
    f(vkCreateFence) f(vkDestroyFence) f(vkGetFenceStatus)                   \
    f(vkWaitForFences) f(vkCreateSemaphore) f(vkDestroySemaphore)            \
    f(vkGetDeviceQueue) f(vkQueueSubmit) f(vkDestroyDevice)
@@ -550,6 +551,14 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       }, VK_NULL_HANDLE) == VK_SUCCESS);
 
    VK_FROM_HANDLE(r3v_native_image, native_depth_image, depth_image);
+   assert(native_depth_image->zmask_layout_admitted);
+   assert(native_depth_image->zmask_layout.fits_zmask_ram);
+   assert(native_depth_image->zmask_layout.stride_in_pixels == 64u);
+   assert(native_depth_image->zmask_layout.dwords == 16u);
+   assert(native_depth_image->zmask_layout.zmask_ram_dwords == 5120u);
+   assert(!native_depth_image->zmask_layout.zcomp8x8);
+   assert(native_depth_image->committed_submission.zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
    const struct r300_zb_depth_layout *depth_layout =
       &native_depth_image->depth_contract.layout;
    const uint64_t binding_offset =
@@ -601,6 +610,7 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
    };
    load_attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
    load_attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   load_attachments[1].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
    VkRenderPass load_pass = VK_NULL_HANDLE;
    assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -673,6 +683,68 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
                       (void **)&depth_bytes) == VK_SUCCESS);
    assert(memcmp(depth_bytes, depth_before, (size_t)allocation_bytes) == 0);
    vkUnmapMemory(device, depth_memory);
+
+   const char *original_fast_clear_gate =
+      native_device->zmask_fast_clear_gate;
+   native_device->zmask_fast_clear_gate = "1";
+   VkCommandBuffer metadata_load_command = fresh_cmd();
+   const VkClearDepthStencilValue metadata_clear = {
+      .depth = 0.25f,
+      .stencil = 0xa5u,
+   };
+   const VkImageSubresourceRange metadata_clear_range = {
+      .aspectMask =
+         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+      .levelCount = 1u,
+      .layerCount = 1u,
+   };
+   vkCmdClearDepthStencilImage(metadata_load_command, depth_image,
+                               VK_IMAGE_LAYOUT_GENERAL, &metadata_clear, 1u,
+                               &metadata_clear_range);
+   vkCmdBeginRenderPass(metadata_load_command, &load_begin,
+                        VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(metadata_load_command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                     load_pipeline);
+   vkCmdBindVertexBuffers(metadata_load_command, 0u, 1u, &vertex_buffer,
+                          &(VkDeviceSize){0u});
+   vkCmdDraw(metadata_load_command, 3u, 1u, 0u, 0u);
+   vkCmdEndRenderPass(metadata_load_command);
+   assert(vkEndCommandBuffer(metadata_load_command) == VK_SUCCESS);
+   native_device->zmask_fast_clear_gate = original_fast_clear_gate;
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_metadata_load,
+                  metadata_load_command);
+   assert(native_metadata_load->ordered_operation_count == 5u);
+   assert(native_metadata_load->ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+   assert(native_metadata_load->ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(native_metadata_load->ordered_operations[2].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+   assert(native_metadata_load->ordered_operations[3].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_DRAW);
+   assert(native_metadata_load->ordered_operations[4].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+   assert(native_metadata_load->ordered_operations[0].ib_position_dwords <
+          native_metadata_load->ordered_operations[1].ib_position_dwords);
+   assert(native_metadata_load->ordered_operations[1].ib_position_dwords <=
+          native_metadata_load->ordered_operations[2].ib_position_dwords);
+   assert(native_metadata_load->ordered_operations[2].ib_position_dwords <=
+          native_metadata_load->ordered_operations[3].ib_position_dwords);
+   assert(native_metadata_load->ordered_operations[1]
+             .payload.image_materialize.image == native_depth_image);
+   struct r3v_native_cmd_image_state *metadata_load_depth_state =
+      r3v_native_cmd_buffer_find_image_state(native_metadata_load,
+                                              native_depth_image);
+   assert(metadata_load_depth_state != NULL);
+   assert(metadata_load_depth_state->current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(metadata_load_depth_state->current_zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
+   assert(native_metadata_load->current_zmask_owner_set);
+   assert(native_metadata_load->current_zmask_owner.image == NULL);
+   assert(native_depth_image->committed_submission.representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(native_device->zmask_owner.image == NULL);
 
    VkRenderPassBeginInfo refused_load_begin = load_begin;
    refused_load_begin.clearValueCount = 0;
@@ -797,6 +869,109 @@ check_depth_attachment_begin(VkImageView color_view, VkPipelineLayout layout,
       .pDependencies = depth_only_dependencies,
    }, NULL, &depth_only_pass) == VK_SUCCESS);
    const VkImageView depth_aspect_views[] = { variants[0], stencil_view };
+
+   VkAttachmentDescription depth_only_load_attachment =
+      depth_only_attachment;
+   depth_only_load_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   depth_only_load_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+   depth_only_load_attachment.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+   VkRenderPass depth_only_load_pass = VK_NULL_HANDLE;
+   assert(vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 1u,
+      .pAttachments = &depth_only_load_attachment,
+      .subpassCount = 1u,
+      .pSubpasses = &(VkSubpassDescription){
+         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+         .pDepthStencilAttachment = &depth_only_reference,
+      },
+   }, NULL, &depth_only_load_pass) == VK_SUCCESS);
+   VkFramebuffer depth_only_load_framebuffer = VK_NULL_HANDLE;
+   assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = depth_only_load_pass,
+      .attachmentCount = 1u,
+      .pAttachments = &depth_aspect_views[0],
+      .width = 64u,
+      .height = 64u,
+      .layers = 1u,
+   }, NULL, &depth_only_load_framebuffer) == VK_SUCCESS);
+   const struct pipeline_shape depth_only_load_shape = {
+      .depth_stencil = 2,
+      .color_attachment_count_zero = VK_TRUE,
+      .attribute_format = VK_FORMAT_R32G32B32A32_SFLOAT,
+      .stride = 16u,
+      .extent_width = 64u,
+      .extent_height = 64u,
+      .fragment_words = r3v_reference_fragment_spirv,
+      .fragment_bytes = sizeof(r3v_reference_fragment_spirv),
+   };
+   VkPipeline depth_only_load_pipeline = VK_NULL_HANDLE;
+   assert(make_pipeline(&depth_only_load_shape, depth_only_load_pass, layout,
+                        &depth_only_load_pipeline) == VK_SUCCESS);
+   const VkRenderPassBeginInfo depth_only_load_begin = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+      .renderPass = depth_only_load_pass,
+      .framebuffer = depth_only_load_framebuffer,
+      .renderArea = {.extent = {64u, 64u}},
+   };
+   native_device->zmask_fast_clear_gate = "1";
+   VkCommandBuffer depth_only_metadata_load_command = fresh_cmd();
+   vkCmdClearDepthStencilImage(depth_only_metadata_load_command, depth_image,
+                               VK_IMAGE_LAYOUT_GENERAL, &metadata_clear, 1u,
+                               &metadata_clear_range);
+   vkCmdBeginRenderPass(depth_only_metadata_load_command,
+                        &depth_only_load_begin, VK_SUBPASS_CONTENTS_INLINE);
+   vkCmdBindPipeline(depth_only_metadata_load_command,
+                     VK_PIPELINE_BIND_POINT_GRAPHICS,
+                     depth_only_load_pipeline);
+   vkCmdBindVertexBuffers(depth_only_metadata_load_command, 0u, 1u,
+                          &vertex_buffer, &(VkDeviceSize){0u});
+   vkCmdDraw(depth_only_metadata_load_command, 3u, 1u, 0u, 0u);
+   vkCmdEndRenderPass(depth_only_metadata_load_command);
+   assert(vkEndCommandBuffer(depth_only_metadata_load_command) == VK_SUCCESS);
+   native_device->zmask_fast_clear_gate = original_fast_clear_gate;
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, native_depth_only_metadata_load,
+                  depth_only_metadata_load_command);
+   assert(native_depth_only_metadata_load->ordered_operation_count == 5u);
+   assert(native_depth_only_metadata_load->ordered_operations[0].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR);
+   assert(native_depth_only_metadata_load->ordered_operations[1].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE);
+   assert(native_depth_only_metadata_load->ordered_operations[2].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_BEGIN);
+   assert(native_depth_only_metadata_load->ordered_operations[3].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_DRAW);
+   assert(native_depth_only_metadata_load->ordered_operations[4].kind ==
+          R3V_NATIVE_ORDERED_OPERATION_RENDER_PASS_END);
+   assert(native_depth_only_metadata_load->ordered_operations[0]
+             .ib_position_dwords <
+          native_depth_only_metadata_load->ordered_operations[1]
+             .ib_position_dwords);
+   assert(native_depth_only_metadata_load->ordered_operations[1]
+             .ib_position_dwords <=
+          native_depth_only_metadata_load->ordered_operations[2]
+             .ib_position_dwords);
+   assert(native_depth_only_metadata_load->ordered_operations[2]
+             .ib_position_dwords <=
+          native_depth_only_metadata_load->ordered_operations[3]
+             .ib_position_dwords);
+   assert(native_depth_only_metadata_load->ordered_operations[1]
+             .payload.image_materialize.image == native_depth_image);
+   struct r3v_native_cmd_image_state *depth_only_metadata_load_state =
+      r3v_native_cmd_buffer_find_image_state(native_depth_only_metadata_load,
+                                              native_depth_image);
+   assert(depth_only_metadata_load_state != NULL);
+   assert(depth_only_metadata_load_state->current_representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED);
+   assert(depth_only_metadata_load_state->current_zmask_metadata.status ==
+          R3V_NATIVE_ZMASK_METADATA_RETIRED);
+   assert(native_depth_only_metadata_load->current_zmask_owner_set);
+   assert(native_depth_only_metadata_load->current_zmask_owner.image == NULL);
+   vkDestroyPipeline(device, depth_only_load_pipeline, NULL);
+   vkDestroyFramebuffer(device, depth_only_load_framebuffer, NULL);
+   vkDestroyRenderPass(device, depth_only_load_pass, NULL);
+
    for (unsigned aspect = 0; aspect < ARRAY_SIZE(depth_aspect_views); aspect++) {
       VkFramebuffer depth_only_framebuffer = VK_NULL_HANDLE;
       assert(vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
@@ -1844,6 +2019,11 @@ main(void)
                 .ppEnabledExtensionNames = device_extensions,
              },
              NULL, &device) == VK_SUCCESS);
+   VK_FROM_HANDLE(r3v_native_device, zmask_fixture_device, device);
+   assert(zmask_fixture_device->zmask_fast_clear_gate != NULL);
+   assert(zmask_fixture_device->zmask_materialize_scratch_initialized);
+   zmask_fixture_device->zmask_fast_clear_gate = NULL;
+   unsetenv("R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL");
 
 #define LOAD(name) name = (PFN_##name)gdpa(device, #name); assert(name);
    DEVICE_COMMANDS(LOAD)

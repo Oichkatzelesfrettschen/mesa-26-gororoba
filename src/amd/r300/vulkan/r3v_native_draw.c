@@ -9,6 +9,7 @@
 
 #include "r3v_entrypoints.h"
 
+#include "amd/r300/common/r300_reg.h"
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_vertex_format.h"
 
@@ -33,6 +34,14 @@ depth_only_render_pass(const struct vk_render_pass *pass)
    return pass != NULL && pass->attachment_count == 1 &&
           pass->subpass_count == 1 && pass->subpasses[0].color_count == 0 &&
           pass->subpasses[0].depth_stencil_attachment != NULL;
+}
+
+static bool
+stencil_face_writes(const struct r300_zb_stencil_face_state *face)
+{
+   return face->write_mask != 0u &&
+          (face->fail_op != R300_ZS_KEEP || face->zpass_op != R300_ZS_KEEP ||
+           face->zfail_op != R300_ZS_KEEP);
 }
 
 static VkResult
@@ -136,8 +145,17 @@ begin_depth_only_render_pass(VkCommandBuffer commandBuffer,
       }
    }
    const VkImageLayout layout = subpass->depth_stencil_attachment->layout;
-   VkResult result = r3v_native_cmd_buffer_transition_image_layout(
-      cmd_buffer, depth_view->image, attachment->initial_layout, layout);
+   VkResult result = VK_SUCCESS;
+   const bool metadata_read_only =
+      r3v_native_packed_depth_stencil_layout(layout) ==
+         VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL &&
+      !depth_clear && !stencil_clear;
+   if (!metadata_read_only)
+      result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
+         cmd_buffer, depth_view->image);
+   if (result == VK_SUCCESS)
+      result = r3v_native_cmd_buffer_transition_image_layout(
+         cmd_buffer, depth_view->image, attachment->initial_layout, layout);
    if (result == VK_SUCCESS)
       result = r3v_native_cmd_buffer_require_image_layout(
          cmd_buffer, depth_view->image, layout,
@@ -385,9 +403,17 @@ r3v_CmdBeginRenderPass(VkCommandBuffer commandBuffer,
    if (state_result == VK_SUCCESS && depth_view != NULL) {
       depth_layout = subpass->depth_stencil_attachment->layout;
       depth_final_layout = pass->attachments[1].final_layout;
-      state_result = r3v_native_cmd_buffer_transition_image_layout(
-         cmd_buffer, depth_view->image, pass->attachments[1].initial_layout,
-         depth_layout);
+      const bool metadata_read_only =
+         r3v_native_packed_depth_stencil_layout(depth_layout) ==
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL &&
+         !depth_loads_clear;
+      if (!metadata_read_only)
+         state_result = r3v_native_cmd_buffer_require_ordinary_depth_backing(
+            cmd_buffer, depth_view->image);
+      if (state_result == VK_SUCCESS)
+         state_result = r3v_native_cmd_buffer_transition_image_layout(
+            cmd_buffer, depth_view->image, pass->attachments[1].initial_layout,
+            depth_layout);
       if (state_result == VK_SUCCESS)
          state_result = r3v_native_cmd_buffer_require_image_layout(
             cmd_buffer, depth_view->image, depth_layout,
@@ -687,6 +713,40 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
        (pass_has_depth && pass_draw->depth_memory == NULL)) {
       poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
       return;
+   }
+   const struct r300_zb_depth_state_params *depth_state =
+      &pipeline->depth_pipeline.hardware;
+   const bool writes_depth_stencil =
+      depth_state->depth_write ||
+      (depth_state->stencil.enabled &&
+       (stencil_face_writes(&depth_state->stencil.front) ||
+        (depth_state->stencil.two_sided &&
+         stencil_face_writes(&depth_state->stencil.back))));
+   const VkImageLayout depth_layout =
+      pass_draw->depth_only ? cmd_buffer->pass_color_layout
+                            : cmd_buffer->pass_depth_layout;
+   const bool depth_attachment_read_only =
+      pass_has_depth &&
+      r3v_native_packed_depth_stencil_layout(depth_layout) ==
+         VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+   if (depth_attachment_read_only && writes_depth_stencil) {
+      poison(commandBuffer, R3V_NATIVE_REFUSAL_RESULT);
+      return;
+   }
+   struct r300_zmask_materialize_plan zmask_fast_clear_read = {0};
+   bool has_zmask_fast_clear_read = false;
+   if (depth_attachment_read_only) {
+      struct r3v_native_image *depth_image =
+         pass_draw->depth_only ? cmd_buffer->pass_target
+                               : cmd_buffer->pass_depth_target;
+      const VkResult zmask_result =
+         r3v_native_cmd_buffer_prepare_zmask_fast_clear_read(
+            cmd_buffer, depth_image, &zmask_fast_clear_read,
+            &has_zmask_fast_clear_read);
+      if (zmask_result != VK_SUCCESS) {
+         poison(commandBuffer, zmask_result);
+         return;
+      }
    }
 
    struct r3v_native_image color_sink_image = {0};
@@ -1025,6 +1085,7 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       pass_has_depth ? &pipeline->depth_pipeline : NULL,
       (first_draw_in_pass && pass_draw->has_depth_clear)
          ? &pass_draw->depth_clear : NULL,
+      has_zmask_fast_clear_read ? &zmask_fast_clear_read : NULL,
       pipeline->color_writes_disabled,
       adaptive_noperspective ? &alternate_cell : NULL);
    if (result != VK_SUCCESS) {
@@ -1129,6 +1190,8 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
       .has_depth_pipeline = pipeline->has_depth_pipeline,
       .depth_clear = depth_clear,
       .has_depth_clear = first_draw_in_pass && pass_draw->has_depth_clear,
+      .zmask_fast_clear_read = zmask_fast_clear_read,
+      .has_zmask_fast_clear_read = has_zmask_fast_clear_read,
       .clear_rect_count = clear_rect_count,
    };
    if (first_draw_in_pass && pass_draw->has_depth_clear)
@@ -1141,14 +1204,6 @@ record_draw(VkCommandBuffer commandBuffer, const struct draw_args *args)
    if (!first_draw_in_pass)
       cmd_buffer->deferred_draw_count++;
    cmd_buffer->draw_recorded = true;
-   const struct r300_zb_depth_state_params *depth_state =
-      &pipeline->depth_pipeline.hardware;
-   const bool writes_depth_stencil =
-      depth_state->depth_write ||
-      (depth_state->stencil.enabled &&
-       (depth_state->stencil.front.write_mask != 0u ||
-        (depth_state->stencil.two_sided &&
-         depth_state->stencil.back.write_mask != 0u)));
    VkResult ordered_result = VK_SUCCESS;
    if (pass_draw->depth_only) {
       ordered_result = r3v_native_cmd_buffer_require_image_layout(

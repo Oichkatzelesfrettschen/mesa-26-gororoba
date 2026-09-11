@@ -45,6 +45,7 @@ r300_common_contract_files = files(
   'r300_zb_depth_surface.c',
   'r300_zb_hyperz_admission.c',
   'r300_zmask_clear_plan.c',
+  'r300_zmask_materialize_plan.c',
   'r300_zmask_layout.c',
 )
 
@@ -73,7 +74,7 @@ if with_tests
 # Gallium tree enforceable at the build level; the Gallium adapter tests
 # live under src/gallium/drivers/r300.  These tests perform no winsys setup
 # and submit no command stream.
-r300_format_contract_test_c_args = ['-Werror=unused-function']
+r300_format_contract_test_c_args = ['-Werror=unused-function', '-UNDEBUG']
 r300_format_contract_test_includes = [
   inc_src,
   inc_include,
@@ -560,6 +561,7 @@ r300_zb_depth_control_cell_test = executable(
         'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_noperspective_q_lane_plan.c', 'r300_noperspective_mixed_carrier_plan.c',
         'r300_zb_depth_control_cell.c', 'r300_zb_depth_state.c',
         'r300_zb_depth_surface.c', 'r300_zb_depth_layout.c',
+        'r300_zmask_materialize_plan.c',
         'tests/r300_zb_depth_control_cell_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -1412,6 +1414,7 @@ test(
 r300_zmask_clear_plan_test = executable(
   'r300_zmask_clear_plan_test',
   files('r300_pm4_builder.c', 'r300_zb_hyperz_admission.c',
+        'r300_zb_depth_layout.c', 'r300_zb_depth_surface.c',
         'r300_zmask_layout.c', 'r300_zmask_clear_plan.c',
         'tests/r300_zmask_clear_plan_test.c'),
   c_args : r300_format_contract_test_c_args,
@@ -1425,6 +1428,19 @@ test(
   r300_zmask_clear_plan_test,
   suite : ['r300'],
 )
+r300_zmask_materialize_plan_test = executable(
+  'r300_zmask_materialize_plan_test',
+  files('r300_pm4_builder.c', 'r300_zb_depth_layout.c',
+        'r300_zb_depth_surface.c', 'r300_zmask_materialize_plan.c',
+        'tests/r300_zmask_materialize_plan_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r300-zmask-materialize-plan', r300_zmask_materialize_plan_test,
+     suite : ['r300'])
 r300_zb_aspect_copy_test = executable(
   'r300_zb_aspect_copy_test',
   files('r300_zb_aspect_copy.c', 'r300_zb_depth_layout.c',

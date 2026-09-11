@@ -1060,12 +1060,29 @@ r3v_CmdClearDepthStencilImage(
    }
 
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
-   if (r3v_native_cmd_buffer_require_image_layout(
-          cmd_buffer, native_image, imageLayout,
-          R3V_NATIVE_IMAGE_PRODUCER_RB2D, true) != VK_SUCCESS ||
-       r3v_native_record_depth_image_clear(
-          commandBuffer, image, aspect_mask, depth_code, stencil) !=
-       VK_SUCCESS)
+   struct r3v_native_device *device =
+      cmd_buffer != NULL && cmd_buffer->vk.base.device != NULL
+         ? container_of(cmd_buffer->vk.base.device, struct r3v_native_device, vk)
+         : NULL;
+   const enum r3v_native_zmask_fast_clear_authority fast_clear_authority =
+      r3v_native_zmask_fast_clear_select(
+         device, cmd_buffer, native_image, aspect_mask, depth_code, stencil);
+   const bool use_zmask_fast_clear =
+      fast_clear_authority != R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY;
+   const enum r3v_native_image_producer producer =
+      use_zmask_fast_clear ? R3V_NATIVE_IMAGE_PRODUCER_ZB
+                           : R3V_NATIVE_IMAGE_PRODUCER_RB2D;
+   VkResult result = r3v_native_cmd_buffer_require_image_layout(
+      cmd_buffer, native_image, imageLayout, producer, true);
+   if (result == VK_SUCCESS) {
+      result = use_zmask_fast_clear
+                  ? r3v_native_record_zmask_fast_clear_with_authority(
+                       commandBuffer, image, depth_code, stencil,
+                       fast_clear_authority)
+                  : r3v_native_record_depth_image_clear(
+                       commandBuffer, image, aspect_mask, depth_code, stencil);
+   }
+   if (result != VK_SUCCESS)
       r3v_native_cmd_poison(commandBuffer);
 }
 
@@ -1520,6 +1537,29 @@ r3v_native_merge_secondary_image_states(
    struct r3v_native_cmd_buffer *primary,
    const struct r3v_native_cmd_buffer *secondary)
 {
+   if (secondary->required_zmask_owner_set) {
+      const struct r3v_native_zmask_owner_state *current_owner =
+         primary->current_zmask_owner_set ? &primary->current_zmask_owner
+         : primary->required_zmask_owner_set
+            ? &primary->required_zmask_owner
+            : &secondary->required_zmask_owner;
+      if (primary->required_zmask_owner_set &&
+          !r3v_native_zmask_owner_equal(
+             current_owner, &secondary->required_zmask_owner) &&
+          (!secondary->current_zmask_owner_set ||
+           !r3v_native_zmask_owner_equal(
+              current_owner, &secondary->current_zmask_owner)))
+         return VK_ERROR_INITIALIZATION_FAILED;
+      if (!primary->required_zmask_owner_set) {
+         primary->required_zmask_owner = secondary->required_zmask_owner;
+         primary->required_zmask_owner_set = true;
+      }
+   }
+   if (secondary->current_zmask_owner_set) {
+      primary->current_zmask_owner = secondary->current_zmask_owner;
+      primary->current_zmask_owner_set = true;
+   }
+
    for (uint32_t index = 0u; index < secondary->image_state_count; index++) {
       const struct r3v_native_cmd_image_state *source =
          &secondary->image_states[index];
@@ -1528,8 +1568,36 @@ r3v_native_merge_secondary_image_states(
          primary, source->image, &destination);
       if (result != VK_SUCCESS)
          return result;
-      if (destination->representation != source->representation)
-         return VK_ERROR_INITIALIZATION_FAILED;
+      if (source->required_representation_set) {
+         const enum r3v_native_image_representation current_representation =
+            destination->current_representation_set
+               ? destination->current_representation
+               : destination->required_representation;
+         if (current_representation != source->required_representation &&
+             (!source->current_representation_set ||
+              current_representation != source->current_representation))
+            return VK_ERROR_INITIALIZATION_FAILED;
+      }
+      if (source->current_representation_set) {
+         destination->current_representation = source->current_representation;
+         destination->current_representation_set = true;
+      }
+      if (source->required_zmask_metadata_set) {
+         const struct r3v_native_zmask_metadata_state *current_metadata =
+            destination->current_zmask_metadata_set
+               ? &destination->current_zmask_metadata
+               : &destination->required_zmask_metadata;
+         if (!r3v_native_zmask_metadata_equal(
+                current_metadata, &source->required_zmask_metadata) &&
+             (!source->current_zmask_metadata_set ||
+              !r3v_native_zmask_metadata_equal(
+                 current_metadata, &source->current_zmask_metadata)))
+            return VK_ERROR_INITIALIZATION_FAILED;
+      }
+      if (source->current_zmask_metadata_set) {
+         destination->current_zmask_metadata = source->current_zmask_metadata;
+         destination->current_zmask_metadata_set = true;
+      }
       if (source->required_layout_set) {
          if (destination->current_layout_set &&
              source->required_layout != R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&
@@ -1823,6 +1891,21 @@ r3v_native_append_secondary_operation(
          r3v_native_memory_to_handle(source->destination_memory), &plan,
          source->write_mask);
    }
+   case R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE:
+      return r3v_native_record_zmask_ownership_only(commandBuffer);
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE:
+      return r3v_native_replay_zmask_initialize(commandBuffer,
+                                                source_operation);
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR:
+      return r3v_native_replay_zmask_fast_clear(commandBuffer,
+                                                source_operation);
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
+      return r3v_native_record_zmask_materialize(
+         commandBuffer,
+         r3v_native_image_to_handle(
+            source_operation->payload.image_materialize.image),
+         source_operation->payload.image_materialize.source_representation,
+         &source_operation->payload.image_materialize.metadata);
    case R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER: {
       const struct r3v_native_image_barrier_record *barrier =
          &source_operation->payload.image_barrier;

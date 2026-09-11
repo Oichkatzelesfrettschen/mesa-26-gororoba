@@ -17,6 +17,7 @@
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
 #include "r300_zb_depth_state.h"
+#include "r300_zmask_materialize_plan.h"
 #include "r300_us_source_read.h"
 #include "tests/r300_retained_route_digests.h"
 #include "tests/r300_varying_cell_digests.h"
@@ -331,6 +332,62 @@ test_depth_state_insertion(void)
    assert(r300_tcl_bypass_triangle_insert_depth_state(&cell, &depth, false) ==
           0);
    assert(cell.ib[cell.reloc_sites[1].ib_index + 10u] == 0u);
+   r300_tcl_bypass_triangle_release(&cell);
+   r300_fragment_binary_finish(&fs);
+}
+
+static void
+test_zmask_fast_clear_read_insertion(void)
+{
+   struct r300_fragment_binary fs;
+   struct r300_tcl_bypass_triangle_ib cell;
+   make_cell(&fs, &cell);
+   const struct r300_zb_depth_state_params depth = {
+      .pitch_pixels = 64u,
+      .depth_format = R300_DEPTHFORMAT_24BIT_INT_Z_8BIT_STENCIL,
+      .depth_offset_bytes = 0x2000u,
+      .depth_function = R300_ZS_LESS,
+      .depth_write = false,
+   };
+   assert(r300_tcl_bypass_triangle_insert_depth_state(&cell, &depth, true) ==
+          0);
+   const struct r300_zmask_materialize_plan plan = {
+      .words = {
+         CP_PACKET0(R300_ZB_DEPTHCLEARVALUE, 0), 0x8000005au,
+         CP_PACKET0(R300_ZB_ZMASK_OFFSET, 1), 0u, 64u,
+         CP_PACKET0(R300_GB_Z_PEQ_CONFIG, 0),
+         R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4,
+         CP_PACKET0(R300_ZB_BW_CNTL, 0),
+         R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE,
+         CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0),
+         R300_ZB_ZCACHE_CTLSTAT_ZC_FLUSH_FLUSH_AND_FREE |
+            R300_ZB_ZCACHE_CTLSTAT_ZC_FREE_FREE,
+         CP_PACKET0(R300_ZB_BW_CNTL, 0), 0u,
+         CP_PACKET0(R300_GB_Z_PEQ_CONFIG, 0),
+         R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4,
+      },
+      .begin_dword_count = 9u,
+      .dword_count = 15u,
+      .clear_word = 0x8000005au,
+   };
+   const uint32_t original_dwords = cell.ib_size_dwords;
+   const uint32_t original_draw = r300_triangle_draw_dword(&cell);
+   const uint32_t original_vertex_reloc = cell.reloc_sites[2].ib_index;
+   assert(r300_tcl_bypass_triangle_insert_zmask_fast_clear_read(&cell,
+                                                                &plan) == 0);
+   assert(cell.ib_size_dwords == original_dwords + plan.dword_count);
+   assert(cell.reloc_sites[0].slot == R300_TRIANGLE_SLOT_COLOR);
+   assert(cell.reloc_sites[1].slot == R300_TRIANGLE_SLOT_DEPTH);
+   assert(cell.reloc_sites[2].slot == R300_TRIANGLE_SLOT_VERTEX);
+   assert(cell.reloc_sites[2].ib_index ==
+          original_vertex_reloc + plan.begin_dword_count);
+   const uint32_t draw = r300_triangle_draw_dword(&cell);
+   assert(draw == original_draw + plan.begin_dword_count);
+   assert(cell.ib[draw + 2u] == CP_PACKET0(R300_ZB_ZCACHE_CTLSTAT, 0));
+   assert(cell.ib[draw + 4u] == CP_PACKET0(R300_ZB_BW_CNTL, 0));
+   assert(cell.ib[draw + 5u] == 0u);
+   assert(r300_tcl_bypass_triangle_validate_reloc_sites(&cell) == 0);
+
    r300_tcl_bypass_triangle_release(&cell);
    r300_fragment_binary_finish(&fs);
 }
@@ -3571,6 +3628,7 @@ main(void)
    test_stream_satisfies_kernel_contract();
    test_reloc_sites_bind_slots();
    test_depth_state_insertion();
+   test_zmask_fast_clear_read_insertion();
    test_ordered_stencil_primitive_segments();
    test_reloc_site_validator_refuses_each_defect();
    test_emission_is_deterministic();

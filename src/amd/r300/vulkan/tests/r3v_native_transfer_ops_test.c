@@ -1034,9 +1034,32 @@ command_packet0_value(const struct r3v_native_cmd_buffer *cmd, uint32_t reg,
    return false;
 }
 
+static bool
+ordered_rb2d_copy_suffix_valid(const struct r3v_native_cmd_buffer *cmd,
+                               uint32_t first_operation)
+{
+   if (cmd->rb2d_copy_operation_count == 0u ||
+       cmd->ordered_operation_count !=
+          first_operation + cmd->rb2d_copy_operation_count)
+      return false;
+   for (uint32_t index = first_operation;
+        index < cmd->ordered_operation_count; index++) {
+      if (cmd->ordered_operations[index].kind !=
+          R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY)
+         return false;
+   }
+   return true;
+}
+
 static int
 check_depth_clear_recording(const struct fixture *f, VkImage image)
 {
+   VK_FROM_HANDLE(r3v_native_device, native_device, f->device);
+   const char *zmask_provisioning_gate = native_device->zmask_fast_clear_gate;
+   REQUIRE(zmask_provisioning_gate != NULL &&
+              native_device->zmask_materialize_scratch_initialized,
+           "the depth storage fixture provisions ZMASK materialization scratch");
+   native_device->zmask_fast_clear_gate = NULL;
    static const struct {
       VkImageAspectFlags aspects;
       VkClearDepthStencilValue clear;
@@ -1055,6 +1078,9 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
 
    for (unsigned case_index = 0u; case_index < ARRAY_SIZE(cases);
         case_index++) {
+      native_device->zmask_automatic_qualified =
+         cases[case_index].aspects !=
+         (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
       if (begin(f))
          return 1;
       const VkImageSubresourceRange range = {
@@ -1097,6 +1123,7 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
             case_index);
       CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
             "depth clear case %u records successfully", case_index);
+      native_device->zmask_automatic_qualified = false;
    }
 
    static const struct {
@@ -1202,6 +1229,109 @@ check_depth_clear_recording(const struct fixture *f, VkImage image)
          "an invalid later range preserves the command payload state");
    CHECK(vkEndCommandBuffer(f->cmd) != VK_SUCCESS,
          "an invalid later range poisons the complete request");
+
+   VK_FROM_HANDLE(r3v_native_image, fast_clear_image, image);
+   native_device->zmask_fast_clear_gate = zmask_provisioning_gate;
+   if (begin(f))
+      return 1;
+   const VkClearDepthStencilValue fast_clear = {
+      .depth = 0.25f,
+      .stencil = 0x15au,
+   };
+   const VkImageSubresourceRange fast_clear_range = {
+      .aspectMask =
+         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+      .baseMipLevel = 0u,
+      .levelCount = 1u,
+      .baseArrayLayer = 0u,
+      .layerCount = 1u,
+   };
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                               &fast_clear, 1u, &fast_clear_range);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, fast_clear_cmd, f->cmd);
+   CHECK(fast_clear_cmd->cell_kind ==
+               R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION &&
+            fast_clear_cmd->ordered_operation_count == 1u &&
+            fast_clear_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR &&
+            fast_clear_cmd->ordered_operations[0]
+                  .payload.image_fast_clear.authority ==
+               R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL &&
+            fast_clear_cmd->reference_count == 1u &&
+            fast_clear_cmd->references[0].memory == fast_clear_image->memory &&
+            fast_clear_cmd->image_state_count == 1u &&
+            fast_clear_cmd->image_states[0].current_representation ==
+               R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.clear_depth_code == 0x400000u &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.clear_stencil == 0x5au &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.generation != 0u &&
+            fast_clear_cmd->current_zmask_owner.image == fast_clear_image &&
+            fast_clear_image->committed_submission.representation ==
+               R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+         "the exact gate records a transactional combined ZMASK fast clear");
+   struct staging fast_clear_readback;
+   if (create_staging(f, 64u * 64u * 4u,
+                      VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                      &fast_clear_readback))
+      return 1;
+   const VkBufferImageCopy fast_clear_copy = {
+      .bufferOffset = 0u,
+      .bufferRowLength = 64u,
+      .bufferImageHeight = 64u,
+      .imageSubresource = {
+         .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+         .mipLevel = 0u,
+         .baseArrayLayer = 0u,
+         .layerCount = 1u,
+      },
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {64u, 64u, 1u},
+   };
+   vkCmdCopyImageToBuffer(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                          fast_clear_readback.buffer, 1u, &fast_clear_copy);
+   CHECK(ordered_rb2d_copy_suffix_valid(fast_clear_cmd, 2u) &&
+            fast_clear_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR &&
+            fast_clear_cmd->ordered_operations[1].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE &&
+            fast_clear_cmd->image_states[0].current_representation ==
+               R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED &&
+            fast_clear_cmd->image_states[0]
+                  .current_zmask_metadata.status ==
+               R3V_NATIVE_ZMASK_METADATA_RETIRED &&
+            fast_clear_cmd->current_zmask_owner.image == NULL,
+         "a readback materializes fast-clear contents before the RB2D copy");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "the gated ZMASK clear and readback record successfully");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release fast-clear readback references");
+   destroy_staging(f, &fast_clear_readback);
+   native_device->zmask_fast_clear_gate = NULL;
+
+   native_device->zmask_fast_clear_gate = zmask_provisioning_gate;
+   native_device->zmask_automatic_qualified = true;
+   if (begin(f))
+      return 1;
+   vkCmdClearDepthStencilImage(f->cmd, image, VK_IMAGE_LAYOUT_GENERAL,
+                               &fast_clear, ARRAY_SIZE(split_ranges),
+                               split_ranges);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, automatic_cmd, f->cmd);
+   CHECK(automatic_cmd->ordered_operation_count == 1u &&
+            automatic_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR &&
+            automatic_cmd->ordered_operations[0]
+                  .payload.image_fast_clear.authority ==
+               R3V_NATIVE_ZMASK_FAST_CLEAR_AUTOMATIC,
+         "split depth and stencil ranges select the qualified automatic ZMASK clear");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "the qualified automatic ZMASK clear records successfully");
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release automatic fast-clear references");
+   native_device->zmask_automatic_qualified = false;
+   native_device->zmask_fast_clear_gate = NULL;
    return 0;
 }
 
@@ -1745,6 +1875,37 @@ check_depth_image_copy_recording(const struct fixture *f,
          "a differently sized depth image copy records successfully");
    REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
            "release differently sized depth image references");
+
+   VK_FROM_HANDLE(r3v_native_device, native_device, f->device);
+   native_device->zmask_automatic_qualified = true;
+   if (begin(f))
+      return 1;
+   const VkClearDepthStencilValue smaller_clear = {
+      .depth = 0.25f,
+      .stencil = 0x5au,
+   };
+   const VkImageSubresourceRange smaller_clear_range = {
+      .aspectMask =
+         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+      .baseMipLevel = 0u,
+      .levelCount = 1u,
+      .baseArrayLayer = 0u,
+      .layerCount = 1u,
+   };
+   vkCmdClearDepthStencilImage(f->cmd, smaller_destination,
+                               VK_IMAGE_LAYOUT_GENERAL, &smaller_clear, 1u,
+                               &smaller_clear_range);
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, smaller_clear_cmd, f->cmd);
+   CHECK(smaller_clear_cmd->cell_kind == R3V_NATIVE_CELL_KIND_ZB_DEPTH_CLEAR &&
+            smaller_clear_cmd->ordered_operation_count == 1u &&
+            smaller_clear_cmd->ordered_operations[0].kind ==
+               R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
+         "a 32x32 combined clear retains the ordinary RB2D route under automatic qualification");
+   CHECK(vkEndCommandBuffer(f->cmd) == VK_SUCCESS,
+         "a 32x32 combined clear records successfully");
+   native_device->zmask_automatic_qualified = false;
+   REQUIRE(vkResetCommandPool(f->device, f->cmd_pool, 0) == VK_SUCCESS,
+           "release smaller depth clear references");
    vkDestroyImage(f->device, smaller_destination, NULL);
    vkFreeMemory(f->device, smaller_memory, NULL);
 

@@ -13,6 +13,7 @@
 #include "r3v_native_arming.h"
 #include "r3v_native_plan.h"
 #include "r3v_route_policy.h"
+#include "r3v_submit_preflight.h"
 
 #include "amd/r300/common/r300_compute_job.h"
 #include "amd/r300/common/r300_compute_verb.h"
@@ -24,6 +25,8 @@
 #include "amd/r300/common/r300_zb_combined_clear.h"
 #include "amd/r300/common/r300_zb_depth_discovery.h"
 #include "amd/r300/common/r300_zb_tile_copy.h"
+#include "amd/r300/common/r300_zmask_layout.h"
+#include "amd/r300/common/r300_zmask_materialize_plan.h"
 #include "r3v_native_depth_image_contract.h"
 #include "r3v_native_depth_pipeline.h"
 #include "r3v_interpolation_lowering.h"
@@ -200,6 +203,7 @@ struct r3v_native_bo_reference {
 };
 
 struct r3v_native_image;
+
 struct r3v_native_pipeline;
 struct r3v_native_buffer;
 struct r3v_native_arming_provider;
@@ -246,6 +250,30 @@ r3v_native_packed_depth_stencil_layout(VkImageLayout layout)
 enum r3v_native_image_representation {
    R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_LINEAR = 0,
    R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED,
+   R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR,
+   R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
+};
+
+enum r3v_native_zmask_fast_clear_authority {
+   R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY = 0,
+   R3V_NATIVE_ZMASK_FAST_CLEAR_AUTOMATIC,
+   R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL,
+};
+
+struct r3v_native_zmask_fast_clear_facts {
+   bool automatic_qualified;
+   bool platform_qualified;
+   bool image_contract_qualified;
+   bool combined_aspects;
+   bool transfer_destination;
+   bool binding_valid;
+   bool layout_qualified;
+   bool materialization_scratch_valid;
+   bool fast_clear_plan_valid;
+   bool command_scope_valid;
+   bool automatic_source_valid;
+   bool experimental_gate;
+   bool experimental_source_valid;
 };
 
 enum r3v_native_image_producer {
@@ -267,6 +295,53 @@ enum r3v_native_image_content_status {
    R3V_NATIVE_IMAGE_CONTENT_INITIALIZED,
 };
 
+enum r3v_native_zmask_metadata_status {
+   R3V_NATIVE_ZMASK_METADATA_RETIRED = 0,
+   R3V_NATIVE_ZMASK_METADATA_INITIALIZED,
+   R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR,
+   R3V_NATIVE_ZMASK_METADATA_COMPRESSED,
+};
+
+struct r3v_native_zmask_metadata_state {
+   enum r3v_native_zmask_metadata_status status;
+   uint32_t clear_depth_code;
+   uint32_t clear_stencil;
+   uint64_t generation;
+};
+
+struct r3v_native_zmask_owner_state {
+   struct r3v_native_image *image;
+   uint32_t offset_dwords;
+   uint32_t dword_count;
+   uint32_t stride_in_pixels;
+   bool zcomp8x8;
+   struct r3v_native_zmask_metadata_state metadata;
+};
+
+static inline bool
+r3v_native_zmask_metadata_equal(
+   const struct r3v_native_zmask_metadata_state *left,
+   const struct r3v_native_zmask_metadata_state *right)
+{
+   return left->status == right->status &&
+          left->clear_depth_code == right->clear_depth_code &&
+          left->clear_stencil == right->clear_stencil &&
+          left->generation == right->generation;
+}
+
+static inline bool
+r3v_native_zmask_owner_equal(
+   const struct r3v_native_zmask_owner_state *left,
+   const struct r3v_native_zmask_owner_state *right)
+{
+   return left->image == right->image &&
+          left->offset_dwords == right->offset_dwords &&
+          left->dword_count == right->dword_count &&
+          left->stride_in_pixels == right->stride_in_pixels &&
+          left->zcomp8x8 == right->zcomp8x8 &&
+          r3v_native_zmask_metadata_equal(&left->metadata, &right->metadata);
+}
+
 /* State committed by the last completed submission.  A zeroed state denotes
  * an undefined layout, the zero-safe representation, host ownership, and
  * discarded contents. */
@@ -276,6 +351,7 @@ struct r3v_native_image_committed_state {
    enum r3v_native_image_producer producer;
    uint32_t visible_to;
    enum r3v_native_image_content_status content;
+   struct r3v_native_zmask_metadata_state zmask_metadata;
 };
 
 /* State assembled while recording one command buffer.  The image pointer is
@@ -284,15 +360,22 @@ struct r3v_native_cmd_image_state {
    struct r3v_native_image *image;
    enum r3v_native_image_api_layout required_layout;
    enum r3v_native_image_api_layout current_layout;
-   enum r3v_native_image_representation representation;
+   enum r3v_native_image_representation required_representation;
+   enum r3v_native_image_representation current_representation;
    enum r3v_native_image_producer producer;
    uint32_t visible_to;
    enum r3v_native_image_content_status content;
+   struct r3v_native_zmask_metadata_state required_zmask_metadata;
+   struct r3v_native_zmask_metadata_state current_zmask_metadata;
    bool required_layout_set;
    bool current_layout_set;
+   bool required_representation_set;
+   bool current_representation_set;
    bool producer_set;
    bool visibility_set;
    bool content_set;
+   bool required_zmask_metadata_set;
+   bool current_zmask_metadata_set;
 };
 
 enum r3v_native_rb2d_copy_geometry {
@@ -422,6 +505,10 @@ enum r3v_native_ordered_operation_kind {
    R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_DEPTH_CLEAR,
    R3V_NATIVE_ORDERED_OPERATION_RB2D_COPY,
+   R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR,
+   R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE,
    R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER,
    R3V_NATIVE_ORDERED_OPERATION_MEMORY_BARRIER,
    R3V_NATIVE_ORDERED_OPERATION_BUFFER_BARRIER,
@@ -446,6 +533,12 @@ struct r3v_native_ordered_operation {
       } color_clear;
       struct {
          struct r3v_native_image *image;
+         struct r3v_native_zmask_owner_state source_owner;
+         struct r3v_native_zmask_metadata_state source_metadata;
+         struct r3v_native_zmask_metadata_state resulting_metadata;
+      } image_zmask_initialize;
+      struct {
+         struct r3v_native_image *image;
          uint32_t x;
          uint32_t y;
          uint32_t width;
@@ -457,6 +550,18 @@ struct r3v_native_ordered_operation {
       struct {
          uint32_t rb2d_copy_index;
       } rb2d_copy;
+      struct {
+         struct r3v_native_image *image;
+         enum r3v_native_zmask_fast_clear_authority authority;
+         enum r3v_native_image_representation source_representation;
+         struct r3v_native_zmask_metadata_state source_metadata;
+         struct r3v_native_zmask_metadata_state resulting_metadata;
+      } image_fast_clear;
+      struct {
+         struct r3v_native_image *image;
+         enum r3v_native_image_representation source_representation;
+         struct r3v_native_zmask_metadata_state metadata;
+      } image_materialize;
       struct r3v_native_image_barrier_record image_barrier;
       struct r3v_native_memory_barrier_record memory_barrier;
       struct {
@@ -776,6 +881,11 @@ struct r3v_native_deferred_draw {
    bool has_depth_pipeline;
    struct r300_zb_combined_clear_plan depth_clear;
    bool has_depth_clear;
+   /* A read-only depth attachment can consume a fast-clear value without
+    * retiring its metadata.  The copied plan wraps this draw's depth test;
+    * compressed metadata never enters this route. */
+   struct r300_zmask_materialize_plan zmask_fast_clear_read;
+   bool has_zmask_fast_clear_read;
    /* The post-vertex lowering the pipeline's linked interface
     * selects, applied to the CPU route's records after the job and
     * before clipping (r3v_post_vs_lowering.h). */
@@ -969,6 +1079,10 @@ struct r3v_native_cmd_buffer {
    uint32_t window_space_ib_size_dwords;
    struct r3v_native_bo_reference *references;
    uint32_t reference_count;
+   struct r3v_native_zmask_owner_state required_zmask_owner;
+   struct r3v_native_zmask_owner_state current_zmask_owner;
+   bool required_zmask_owner_set;
+   bool current_zmask_owner_set;
 
    struct r3v_native_image *pass_target;
    struct r3v_native_image *pass_depth_target;
@@ -1233,6 +1347,7 @@ struct r3v_measurement_execution {
 
 struct r3v_native_prepared_submission {
    bool valid;
+   struct r3v_hyperz_grant_transaction hyperz_grant;
    struct r3v_native_cmd_buffer *cmd_buffer;
    struct radeon_drm_vk_reloc_list relocs;
    struct radeon_drm_vk_cs cs;
@@ -1395,6 +1510,36 @@ const char *r3v_native_plan_replay_close(
    struct r3v_native_plan_replay *replay);
 void r3v_native_plan_replay_finish(struct r3v_native_plan_replay *replay);
 
+/* Device memory owns exactly one GEM BO; a mapping lives for the map/unmap
+ * window.
+ */
+struct r3v_native_memory {
+   struct vk_device_memory vk;
+   struct radeon_drm_vk_bo bo;
+   void *map;
+   /* Which allocation on this device this is, taken from the device's
+    * counter before the handle is published and never written again.  A
+    * GEM handle indexes one DRM file's object table and is recycled once
+    * the object it named is destroyed, so a binding that recorded the
+    * handle alone would accept a different allocation reusing the
+    * number.  Zero is no allocation: the counter's first value is one,
+    * so a published allocation always carries a nonzero generation and a
+    * zeroed structure carries none.
+    *
+    * The scope is one device.  Every VkDevice a physical device creates
+    * shares that physical device's render-node file descriptor, and so
+    * one GEM handle table, while each device counts its allocations on
+    * its own.  Two devices therefore assign one generation to two
+    * different objects, which decides nothing, because
+    * r3v_BindBufferMemory2 refuses a buffer and a memory object that do
+    * not both belong to the binding device: a session compares handles
+    * and generations its own device stamped. */
+   uint64_t generation;
+};
+
+/* Vulkan bindings and their GEM BOs use one page of alignment. */
+#define R3V_NATIVE_MEMORY_ALIGNMENT 4096
+
 struct r3v_native_device {
    struct vk_device vk;
    struct r3v_physical_device *pdevice;
@@ -1406,6 +1551,11 @@ struct r3v_native_device {
     * r3v_native_hyperz_admit and refuses by name when the kernel withholds
     * it; the descriptor releases the block at device destruction. */
    enum r300_zb_hyperz_ownership hyperz_ownership;
+   struct r3v_native_zmask_owner_state zmask_owner;
+   struct r3v_native_memory zmask_materialize_vertex;
+   struct r3v_native_memory zmask_materialize_color;
+   bool zmask_materialize_scratch_initialized;
+   bool zmask_automatic_qualified;
    struct r3v_native_queue queue;
    struct r3v_native_submission_trace submission_trace;
    bool submit_hazard_accepted;
@@ -1494,6 +1644,7 @@ struct r3v_native_device {
     * nanosecond is roughly five hundred years of continuous
     * allocation. */
    uint64_t allocation_generation_counter;
+   uint64_t zmask_metadata_generation_counter;
    /* The bounded measurement campaign this device was created under.  It
     * is opened once, inside vkCreateDevice, over the declaration
     * R3V_NATIVE_MEASUREMENT_DECLARATION names; a device created without
@@ -1545,6 +1696,9 @@ struct r3v_native_device {
    const char *r2vb_delivery_gate;
    const char *r2vb_gpu_delivery_gate;
    const char *r2vb_fetched_gate;
+   const char *zmask_ownership_gate;
+   const char *zmask_initialize_gate;
+   const char *zmask_fast_clear_gate;
    /* The compute route gate table, one entry per route identity read from
     * that route's own gate the same way (the literal "1" or NULL).  A gate
     * belongs to one route, so an open gate never makes a second route for
@@ -1623,36 +1777,6 @@ VK_DEFINE_HANDLE_CASTS(r3v_native_device, vk.base, VkDevice,
                        VK_OBJECT_TYPE_DEVICE)
 VK_DEFINE_HANDLE_CASTS(r3v_native_cmd_buffer, vk.base, VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
-
-/* Device memory owns exactly one GEM BO; a mapping lives for the map/unmap
- * window.
- */
-struct r3v_native_memory {
-   struct vk_device_memory vk;
-   struct radeon_drm_vk_bo bo;
-   void *map;
-   /* Which allocation on this device this is, taken from the device's
-    * counter before the handle is published and never written again.  A
-    * GEM handle indexes one DRM file's object table and is recycled once
-    * the object it named is destroyed, so a binding that recorded the
-    * handle alone would accept a different allocation reusing the
-    * number.  Zero is no allocation: the counter's first value is one,
-    * so a published allocation always carries a nonzero generation and a
-    * zeroed structure carries none.
-    *
-    * The scope is one device.  Every VkDevice a physical device creates
-    * shares that physical device's render-node file descriptor, and so
-    * one GEM handle table, while each device counts its allocations on
-    * its own.  Two devices therefore assign one generation to two
-    * different objects, which decides nothing, because
-    * r3v_BindBufferMemory2 refuses a buffer and a memory object that do
-    * not both belong to the binding device: a session compares handles
-    * and generations its own device stamped. */
-   uint64_t generation;
-};
-
-/* Vulkan bindings and their GEM BOs use one page of alignment. */
-#define R3V_NATIVE_MEMORY_ALIGNMENT 4096
 
 struct r3v_native_buffer {
    struct vk_buffer vk;
@@ -1843,6 +1967,8 @@ struct r3v_native_image {
    struct r3v_native_memory *memory;
    VkDeviceSize memory_offset;
    struct r3v_native_image_committed_state committed_submission;
+   struct r300_zmask_layout zmask_layout;
+   bool zmask_layout_admitted;
    /* Creation extent, inside the family's published maximum. */
    uint32_t width;
    uint32_t height;
@@ -2126,9 +2252,74 @@ VkResult r3v_native_cmd_buffer_require_image_layout(
    VkImageLayout layout, enum r3v_native_image_producer producer,
    bool writes_content);
 
+VkResult r3v_native_cmd_buffer_require_ordinary_depth_backing(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_image *image);
+
+VkResult r3v_native_cmd_buffer_prepare_zmask_fast_clear_read(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_native_image *image,
+   struct r300_zmask_materialize_plan *plan, bool *enabled);
+
 VkResult r3v_native_cmd_buffer_transition_image_layout(
    struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
    VkImageLayout old_layout, VkImageLayout new_layout);
+
+VkResult r3v_native_cmd_buffer_transition_image_representation(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   enum r3v_native_image_representation required_representation,
+   enum r3v_native_image_representation resulting_representation);
+
+VkResult r3v_native_cmd_buffer_transition_zmask_metadata(
+   struct r3v_native_cmd_buffer *cmd_buffer, struct r3v_native_image *image,
+   const struct r3v_native_zmask_metadata_state *required_metadata,
+   const struct r3v_native_zmask_metadata_state *resulting_metadata);
+
+VkResult r3v_native_zmask_owner_from_image(
+   struct r3v_native_image *image,
+   const struct r3v_native_zmask_metadata_state *metadata,
+   struct r3v_native_zmask_owner_state *owner);
+
+VkResult r3v_native_cmd_buffer_transition_zmask_owner(
+   struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_zmask_owner_state *required_owner,
+   const struct r3v_native_zmask_owner_state *resulting_owner);
+
+VkResult r3v_native_record_zmask_materialize(
+   VkCommandBuffer command_buffer, VkImage image,
+   enum r3v_native_image_representation source_representation,
+   const struct r3v_native_zmask_metadata_state *source_metadata);
+
+VkResult r3v_native_record_zmask_ownership_only(
+   VkCommandBuffer command_buffer);
+
+VkResult r3v_native_record_zmask_initialize(VkCommandBuffer command_buffer,
+                                            VkImage image);
+
+VkResult r3v_native_replay_zmask_initialize(
+   VkCommandBuffer command_buffer,
+   const struct r3v_native_ordered_operation *source_operation);
+
+VkResult r3v_native_record_zmask_fast_clear(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t depth_code,
+   uint32_t stencil);
+enum r3v_native_zmask_fast_clear_authority
+r3v_native_zmask_fast_clear_select_facts(
+   const struct r3v_native_zmask_fast_clear_facts *facts);
+enum r3v_native_zmask_fast_clear_authority
+r3v_native_zmask_fast_clear_select(
+   const struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   const struct r3v_native_image *image, uint32_t aspect_mask,
+   uint32_t depth_code, uint32_t stencil);
+VkResult r3v_native_record_zmask_fast_clear_with_authority(
+   VkCommandBuffer command_buffer, VkImage image, uint32_t depth_code,
+   uint32_t stencil,
+   enum r3v_native_zmask_fast_clear_authority authority);
+
+VkResult r3v_native_replay_zmask_fast_clear(
+   VkCommandBuffer command_buffer,
+   const struct r3v_native_ordered_operation *source_operation);
 
 VkResult r3v_native_cmd_buffer_append_render_pass_dependency(
    struct r3v_native_cmd_buffer *cmd_buffer,
@@ -2521,6 +2712,7 @@ VkResult r3v_native_record_tcl_bypass_triangle_carrier(
    const struct r3v_native_depth_image_bound *depth_bound,
    const struct r3v_native_depth_pipeline_state *depth_pipeline,
    const struct r300_zb_combined_clear_plan *depth_clear,
+   const struct r300_zmask_materialize_plan *zmask_fast_clear_read,
    bool color_writes_disabled,
    struct r300_tcl_bypass_triangle_ib *alternate_carrier_cell);
 
@@ -2627,11 +2819,28 @@ VkResult r3v_native_deferred_dispatch_verify_gpu(
  * the admission row the kernel would have rejected on.  A malformed stream
  * refuses before any ioctl. */
 VkResult r3v_native_hyperz_admit(struct r3v_native_device *device,
-                                 struct r3v_native_cmd_buffer *cmd_buffer);
+                                 struct r3v_native_cmd_buffer *cmd_buffer,
+                                 struct r3v_hyperz_grant_transaction
+                                    *transaction);
+
+enum r300_zb_hyperz_verdict r3v_native_hyperz_submission_prepare(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_hyperz_grant_transaction *transaction,
+   struct r300_zb_hyperz_site *site, int *request_result,
+   uint32_t *returned_ownership);
+
+int r3v_native_hyperz_request_ownership(struct r3v_native_device *device,
+                                        uint32_t *returned_ownership);
 
 /* Releases HyperZ ownership held by the descriptor; a device holding none
- * returns without an ioctl. */
-void r3v_native_hyperz_release(struct r3v_native_device *device);
+ * succeeds without an ioctl.  A failed kernel release leaves the local state
+ * owned because the descriptor remains the only recovery boundary. */
+bool r3v_native_hyperz_release(struct r3v_native_device *device);
+
+bool r3v_native_hyperz_submission_finish(
+   struct r3v_native_device *device,
+   const struct r3v_hyperz_grant_transaction *transaction);
 
 VkResult r3v_native_deferred_draw_admit_gpu_producer(
    struct r3v_native_device *device,

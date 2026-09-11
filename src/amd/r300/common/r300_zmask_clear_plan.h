@@ -17,6 +17,7 @@
 #define R300_ZMASK_CLEAR_PLAN_H
 
 #include "r300_zmask_layout.h"
+#include "r300_zb_depth_surface.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -37,7 +38,7 @@ enum r300_zmask_clear_stage {
  * registers, GB_Z_PEQ_CONFIG, ZB_BW_CNTL, and the four-dword
  * 3D_CLEAR_ZMASK packet.
  */
-#define R300_ZMASK_CLEAR_PLAN_MAX_DWORDS 16u
+#define R300_ZMASK_CLEAR_PLAN_MAX_DWORDS 20u
 
 struct r300_zmask_clear_plan {
    uint32_t words[R300_ZMASK_CLEAR_PLAN_MAX_DWORDS];
@@ -88,6 +89,11 @@ enum r300_zmask_compression r300_zmask_clear_stage_block(
 int r300_zmask_clear_plan_build(enum r300_zmask_clear_stage stage,
                                 const struct r300_zmask_layout *layout,
                                 struct r300_zmask_clear_plan *out);
+
+int r300_zmask_fast_clear_plan_build(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zmask_layout *layout, uint32_t depth_code,
+   uint32_t stencil, struct r300_zmask_clear_plan *out);
 
 const char *r300_zmask_clear_stage_name(enum r300_zmask_clear_stage stage);
 

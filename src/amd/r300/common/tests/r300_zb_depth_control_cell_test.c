@@ -14,6 +14,7 @@
 #include "r300_pm4_builder.h"
 #include "r300_reg.h"
 #include "r300_tcl_bypass_triangle.h"
+#include "r300_zmask_materialize_plan.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -154,6 +155,56 @@ test_draw_packet(void)
 
    r300_zb_depth_control_release(&cell);
    printf("draw packet ok\n");
+}
+
+static void
+test_zmask_materialization_stream(void)
+{
+   const struct r300_zmask_layout layout = {
+      .stride_in_pixels = 64u,
+      .dwords = 16u,
+      .zmask_ram_dwords = 5120u,
+      .fits_zmask_ram = true,
+      .zcomp8x8 = false,
+   };
+   struct r300_zmask_materialize_plan plan;
+   assert(r300_zmask_materialize_prefix(
+             &r300_zb_depth_surface_rs485m_z24_macrotiled_logical,
+             &layout, 0x345678u, 0xa5u, &plan) == 0);
+   assert(r300_zmask_materialize_suffix(&plan) == 0);
+
+   struct r300_zb_depth_control_ib cell;
+   assert(r300_zb_depth_zmask_materialize_emit(
+             &plan, 2048u, 0u,
+             r300_rb3d_colorpitch0_pack_argb8888(64u), &cell) == 0);
+   assert(reg_value(&cell, R300_ZB_CNTL, 2u) == R300_Z_WRITE_ENABLE);
+   assert(reg_value(&cell, R300_ZB_DEPTHCLEARVALUE, 1u) == 0x345678a5u);
+   bool zmask_binding_found = false;
+   for (uint32_t index = 0u; index + 2u < cell.ib_size_dwords; index++) {
+      if (cell.ib[index] != CP_PACKET0(R300_ZB_ZMASK_OFFSET, 1u))
+         continue;
+      assert(cell.ib[index + 1u] == 0u);
+      assert(cell.ib[index + 2u] == 64u);
+      zmask_binding_found = true;
+   }
+   assert(zmask_binding_found);
+   assert(reg_value(&cell, R300_ZB_BW_CNTL, 4u) == 0u);
+   assert(reg_value(&cell, R300_GB_Z_PEQ_CONFIG, 3u) ==
+          R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
+
+   uint32_t draw_index = UINT32_MAX;
+   for (uint32_t index = 0u; index + 1u < cell.ib_size_dwords; index++) {
+      if (cell.ib[index] ==
+          packet3_header(R300_PACKET3_3D_DRAW_VBUF_2, 1u))
+         draw_index = index;
+   }
+   assert(draw_index != UINT32_MAX);
+   assert(cell.ib[draw_index + 1u] ==
+          (R300_VAP_VF_CNTL__PRIM_TRIANGLES | R300_PRIM_WALK_LIST |
+           (R300_ZMASK_MATERIALIZE_VERTEX_COUNT
+            << R300_PRIM_NUM_VERTICES_SHIFT)));
+   r300_zb_depth_control_release(&cell);
+   printf("ZMASK materialization stream ok\n");
 }
 
 /* The contract bounds the vertex index at five, so the kernel's vertex
@@ -1346,6 +1397,7 @@ main(void)
 {
    test_depth_state_words();
    test_draw_packet();
+   test_zmask_materialization_stream();
    test_contract_vertex_bound();
    test_contract_departure();
    test_reloc_sites();

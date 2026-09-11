@@ -218,6 +218,29 @@ r3v_native_ordered_image_composition_geometry_valid(
                 cmd_buffer->rb2d_copy_operation_count)
             return false;
          break;
+      case R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE:
+         if (render_pass_open)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE:
+         if (render_pass_open ||
+             operation->payload.image_zmask_initialize.image == NULL ||
+             !operation->payload.image_zmask_initialize.image
+                 ->zmask_layout_admitted)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR:
+         if (render_pass_open ||
+             operation->payload.image_fast_clear.image == NULL ||
+             !operation->payload.image_fast_clear.image->zmask_layout_admitted)
+            return false;
+         break;
+      case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
+         if (render_pass_open ||
+             operation->payload.image_materialize.image == NULL ||
+             !operation->payload.image_materialize.image->zmask_layout_admitted)
+            return false;
+         break;
       case R3V_NATIVE_ORDERED_OPERATION_IMAGE_BARRIER:
          if (render_pass_open ||
              operation->payload.image_barrier.image == NULL)
@@ -1640,6 +1663,7 @@ r3v_native_prepared_release(struct r3v_native_device *device)
    struct r3v_native_prepared_submission *prepared = &device->prepared;
    if (!prepared->valid)
       return;
+   r3v_native_hyperz_submission_finish(device, &prepared->hyperz_grant);
    radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
    radeon_drm_vk_reloc_list_finish(&prepared->relocs);
    free(prepared->reference_indices);
@@ -1802,11 +1826,21 @@ r3v_native_cmd_buffer_has_positional_host_work(
          cmd_buffer->ordered_operations[index].kind;
       if (kind == R3V_NATIVE_ORDERED_OPERATION_HOST_COPY ||
           kind == R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR ||
+          kind == R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE ||
           kind == R3V_NATIVE_ORDERED_OPERATION_EVENT ||
           kind == R3V_NATIVE_ORDERED_OPERATION_QUERY)
          return true;
    }
    return false;
+}
+
+static bool
+r3v_native_cmd_buffer_gpu_producer_delivery(
+   const struct r3v_native_cmd_buffer *cmd_buffer)
+{
+   return cmd_buffer->deferred_draw_count != 0u &&
+          cmd_buffer->deferred_draws != NULL &&
+          cmd_buffer->deferred_draws[0].gpu_producer_delivery;
 }
 
 static VkResult
@@ -1816,6 +1850,21 @@ r3v_native_queue_execute_ordered_host_operation(
    const struct r3v_native_ordered_operation *operation)
 {
    switch (operation->kind) {
+   case R3V_NATIVE_ORDERED_OPERATION_HYPERZ_ACQUIRE: {
+      uint32_t returned_ownership = 0u;
+      const int request_result = r3v_native_hyperz_request_ownership(
+         device, &returned_ownership);
+      if (request_result == 0 && returned_ownership == 1u)
+         return VK_SUCCESS;
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: explicit HyperZ ownership request %s",
+                       request_result == 0 ? "was withheld by the kernel"
+                                           : strerror(-request_result));
+   }
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_ZMASK_INITIALIZE:
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_FAST_CLEAR:
+   case R3V_NATIVE_ORDERED_OPERATION_IMAGE_MATERIALIZE:
+      return VK_SUCCESS;
    case R3V_NATIVE_ORDERED_OPERATION_COLOR_CLEAR:
       return r3v_native_cmd_buffer_execute_deferred_draw_color_clear(
          device, cmd_buffer,
@@ -1965,8 +2014,12 @@ r3v_native_queue_execute_positional_stream(
    struct r3v_native_device *device,
    struct r3v_native_cmd_buffer *cmd_buffer,
    const struct radeon_drm_vk_reloc_list *relocs,
-   struct radeon_drm_vk_completion *completion)
+   struct radeon_drm_vk_completion *completion,
+   bool *any_ioctl_accepted)
 {
+   if (any_ioctl_accepted == NULL)
+      return vk_error(device, VK_ERROR_DEVICE_LOST);
+   *any_ioctl_accepted = false;
    uint32_t submitted_dwords = 0u;
    struct r3v_native_ordered_transport_progress progress =
       r3v_native_ordered_transport_progress_init();
@@ -2014,9 +2067,11 @@ r3v_native_queue_execute_positional_stream(
       r3v_native_fill_route_record_transport(
          cmd_buffer, progress.all_ioctls_accepted,
          progress.all_ioctls_accepted && progress.all_completions_retired);
+   *any_ioctl_accepted = progress.any_ioctl_accepted;
    return VK_SUCCESS;
 
 finish:
+   *any_ioctl_accepted = progress.any_ioctl_accepted;
    if (progress.ioctl_seen) {
       r3v_native_fill_route_record_transport(
          cmd_buffer, progress.all_ioctls_accepted, false);
@@ -2268,7 +2323,8 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    /* HyperZ admission judges the exact IB the CS build binds, on every
     * path that reaches DRM_RADEON_CS: a HyperZ write reaches the kernel
     * only from a descriptor the kernel already made the owner. */
-   result = r3v_native_hyperz_admit(device, cmd_buffer);
+   result = r3v_native_hyperz_admit(
+      device, cmd_buffer, &prepared->hyperz_grant);
    if (result != VK_SUCCESS) {
       radeon_drm_vk_completion_finish(&device->drm, &prepared->completion);
       goto prepare_fail;
@@ -2325,6 +2381,7 @@ r3v_native_queue_prepare_submission(VkDevice _device,
    return VK_SUCCESS;
 
 prepare_fail:
+   r3v_native_hyperz_submission_finish(device, &prepared->hyperz_grant);
    free(prepared->reference_indices);
    radeon_drm_vk_reloc_list_finish(&prepared->relocs);
    memset(prepared, 0, sizeof(*prepared));
@@ -2364,8 +2421,9 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
     * path does, so one accessor describes both.
     */
    device->transport_gpu_producer_delivery =
-      cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+      r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
    device->transport_cell_kind = cmd_buffer->cell_kind;
+   device->transport_cs_ioctl_count++;
    device->transport_return_ns = 0;
    device->transport_enter_ns = r3v_native_raw_now_ns();
    int result = radeon_drm_vk_cs_submit(&device->drm, &prepared->cs);
@@ -2373,6 +2431,8 @@ r3v_native_queue_commit_prepared(struct r3v_native_device *device,
           device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
       trace_result = -EIO;
    const bool ioctl_accepted = result == 0;
+   r3v_hyperz_grant_transaction_record_ioctl(&prepared->hyperz_grant,
+                                              ioctl_accepted);
    if (ioctl_accepted) {
       device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
       if (r3v_native_submission_trace_emit(
@@ -2437,11 +2497,23 @@ r3v_native_queue_preflight_image_states(
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    uint32_t state_count = 0u;
+   struct r3v_native_zmask_owner_state pending_owner = device->zmask_owner;
    for (uint32_t command_index = 0u;
         command_index < submit->command_buffer_count; command_index++) {
       const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[command_index],
          struct r3v_native_cmd_buffer, vk);
+      if (cmd_buffer->required_zmask_owner_set &&
+          !r3v_native_zmask_owner_equal(
+             &pending_owner, &cmd_buffer->required_zmask_owner)) {
+         free(states);
+         return vk_errorf(
+            device, R3V_NATIVE_REFUSAL_RESULT,
+            "r3v-native: command buffer %u requires a different ZMASK owner",
+            command_index);
+      }
+      if (cmd_buffer->current_zmask_owner_set)
+         pending_owner = cmd_buffer->current_zmask_owner;
       for (uint32_t image_index = 0u;
            image_index < cmd_buffer->image_state_count; image_index++) {
          const struct r3v_native_cmd_image_state *recorded =
@@ -2459,7 +2531,12 @@ r3v_native_queue_preflight_image_states(
          }
          struct r3v_native_image_committed_state *pending =
             &states[pending_index].state;
-         if (pending->representation != recorded->representation ||
+         if ((recorded->required_representation_set &&
+              pending->representation != recorded->required_representation) ||
+             (recorded->required_zmask_metadata_set &&
+              !r3v_native_zmask_metadata_equal(
+                 &pending->zmask_metadata,
+                 &recorded->required_zmask_metadata)) ||
              (recorded->required_layout_set &&
               recorded->required_layout !=
                  R3V_NATIVE_IMAGE_API_LAYOUT_UNDEFINED &&
@@ -2470,9 +2547,13 @@ r3v_native_queue_preflight_image_states(
                "r3v-native: command buffer %u image state requires layout "
                "%u from representation %u, found layout %u representation %u",
                command_index, recorded->required_layout,
-               recorded->representation, pending->api_layout,
+               recorded->required_representation, pending->api_layout,
                pending->representation);
          }
+         if (recorded->current_representation_set)
+            pending->representation = recorded->current_representation;
+         if (recorded->current_zmask_metadata_set)
+            pending->zmask_metadata = recorded->current_zmask_metadata;
          if (recorded->current_layout_set)
             pending->api_layout = recorded->current_layout;
          if (recorded->producer_set)
@@ -2488,17 +2569,26 @@ r3v_native_queue_preflight_image_states(
 }
 
 static void
-r3v_native_queue_publish_image_states(const struct vk_queue_submit *submit)
+r3v_native_queue_publish_image_states(struct r3v_native_device *device,
+                                      const struct vk_queue_submit *submit)
 {
    for (uint32_t command_index = 0u;
         command_index < submit->command_buffer_count; command_index++) {
       const struct r3v_native_cmd_buffer *cmd_buffer = container_of(
          submit->command_buffers[command_index],
          struct r3v_native_cmd_buffer, vk);
+      if (cmd_buffer->current_zmask_owner_set)
+         device->zmask_owner = cmd_buffer->current_zmask_owner;
       for (uint32_t image_index = 0u;
            image_index < cmd_buffer->image_state_count; image_index++) {
          const struct r3v_native_cmd_image_state *recorded =
             &cmd_buffer->image_states[image_index];
+         if (recorded->current_representation_set)
+            recorded->image->committed_submission.representation =
+               recorded->current_representation;
+         if (recorded->current_zmask_metadata_set)
+            recorded->image->committed_submission.zmask_metadata =
+               recorded->current_zmask_metadata;
          if (recorded->current_layout_set)
             recorded->image->committed_submission.api_layout =
                recorded->current_layout;
@@ -3041,15 +3131,6 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          radeon_drm_vk_reloc_list_finish(&relocs);
          return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
-      /* HyperZ admission judges the exact IB this build binds, the same
-       * gate the prepared path runs before its own build. */
-      const VkResult hyperz_admit = r3v_native_hyperz_admit(device, cmd_buffer);
-      if (hyperz_admit != VK_SUCCESS) {
-         free(reference_indices);
-         radeon_drm_vk_completion_finish(&device->drm, &completion);
-         radeon_drm_vk_reloc_list_finish(&relocs);
-         return hyperz_admit;
-      }
       /* The one CS build on the inline path: the completion reference
        * above finalized the relocation list, so the argument block binds
        * the exact chunks the ioctl sends.
@@ -3473,12 +3554,30 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
          }
       }
 
+      /* Acquire HyperZ only after every fallible preparation and semantic
+       * admission step.  A rejected CS ioctl releases a grant obtained for
+       * this submission; a previously held descriptor grant remains held. */
+      struct r3v_hyperz_grant_transaction hyperz_grant;
+      const VkResult hyperz_admit = r3v_native_hyperz_admit(
+         device, cmd_buffer, &hyperz_grant);
+      if (hyperz_admit != VK_SUCCESS) {
+         free(reference_indices);
+         radeon_drm_vk_completion_finish(&device->drm, &completion);
+         radeon_drm_vk_reloc_list_finish(&relocs);
+         return hyperz_admit;
+      }
+
       if (positional_host_work) {
          device->transport_gpu_producer_delivery =
-            cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+            r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
          device->transport_cell_kind = cmd_buffer->cell_kind;
+         bool any_ioctl_accepted = false;
          VkResult ordered_result = r3v_native_queue_execute_positional_stream(
-            device, cmd_buffer, &relocs, &completion);
+            device, cmd_buffer, &relocs, &completion,
+            &any_ioctl_accepted);
+         r3v_hyperz_grant_transaction_record_ioctl(&hyperz_grant,
+                                                    any_ioctl_accepted);
+         r3v_native_hyperz_submission_finish(device, &hyperz_grant);
          free(reference_indices);
          radeon_drm_vk_completion_finish(&device->drm, &completion);
          radeon_drm_vk_reloc_list_finish(&relocs);
@@ -3517,8 +3616,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
        * open transcript, and it runs identically on every route.
        */
       device->transport_gpu_producer_delivery =
-         cmd_buffer->deferred_draws[0].gpu_producer_delivery;
+         r3v_native_cmd_buffer_gpu_producer_delivery(cmd_buffer);
       device->transport_cell_kind = cmd_buffer->cell_kind;
+      device->transport_cs_ioctl_count++;
       device->transport_return_ns = 0;
       device->transport_enter_ns = r3v_native_raw_now_ns();
       int result = radeon_drm_vk_cs_submit(&device->drm, &cs);
@@ -3526,6 +3626,9 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
              device, R3V_NATIVE_SUBMISSION_TRACE_CS_IOCTL_RETURN) != 0)
          trace_result = -EIO;
       const bool ioctl_accepted = result == 0;
+      r3v_hyperz_grant_transaction_record_ioctl(&hyperz_grant,
+                                                 ioctl_accepted);
+      r3v_native_hyperz_submission_finish(device, &hyperz_grant);
       if (ioctl_accepted) {
          device->queue_status = R3V_NATIVE_QUEUE_STATUS_SUBMITTED;
          if (r3v_native_submission_trace_emit(
@@ -3629,7 +3732,7 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
 
    device->queue_status = r3v_native_queue_status_finalize_submit(
       device->queue_status, submit_has_executable_ib);
-   r3v_native_queue_publish_image_states(submit);
+   r3v_native_queue_publish_image_states(device, submit);
 
    /* The bounded completion wait above retired every buffer.  Consuming
     * permanent binary waits before signaling keeps the semaphore state ready
@@ -3644,56 +3747,114 @@ r3v_native_queue_submit(struct vk_queue *queue_base,
                               submit->signals);
 }
 
-VkResult
-r3v_native_hyperz_admit(struct r3v_native_device *device,
-                        struct r3v_native_cmd_buffer *cmd_buffer)
+enum r300_zb_hyperz_verdict
+r3v_native_hyperz_submission_prepare(
+   struct r3v_native_device *device,
+   const struct r3v_native_cmd_buffer *cmd_buffer,
+   struct r3v_hyperz_grant_transaction *transaction,
+   struct r300_zb_hyperz_site *site, int *request_result,
+   uint32_t *returned_ownership)
 {
-   struct r300_zb_hyperz_site site;
+   if (device == NULL || cmd_buffer == NULL || transaction == NULL ||
+       site == NULL || request_result == NULL || returned_ownership == NULL)
+      return R300_ZB_HYPERZ_REFUSE_STREAM;
+   r3v_hyperz_grant_transaction_begin(transaction);
+   *site = (struct r300_zb_hyperz_site){0};
+   *request_result = 0;
+   *returned_ownership =
+      device->hyperz_ownership == R300_ZB_HYPERZ_OWNED ? 1u : 0u;
    enum r300_zb_hyperz_verdict verdict = r300_zb_hyperz_admit_stream(
       cmd_buffer->ib, cmd_buffer->ib_size_dwords, device->hyperz_ownership,
-      &site);
+      site);
 
    if (verdict == R300_ZB_HYPERZ_ADMIT)
-      return VK_SUCCESS;
-   if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM) {
-      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
-                       "r3v-native: HyperZ admission refused: %s",
-                       r300_zb_hyperz_verdict_name(verdict));
-   }
+      return verdict;
+   if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM)
+      return verdict;
 
    /* The first HyperZ write on this descriptor: ask the kernel for the
     * block.  The value is both request and answer, so a returned 1 is
     * ownership and anything else is the kernel withholding it, typically
     * because another descriptor holds it. */
-   uint32_t want = 1u;
-   const int r = radeon_drm_vk_device_info_u32(&device->drm,
-                                               RADEON_INFO_WANT_HYPERZ, &want);
-   if (r == 0 && want == 1u) {
-      device->hyperz_ownership = R300_ZB_HYPERZ_OWNED;
+   *request_result =
+      r3v_native_hyperz_request_ownership(device, returned_ownership);
+   if (*request_result == 0 && *returned_ownership == 1u) {
+      r3v_hyperz_grant_transaction_record_acquisition(transaction);
       verdict = r300_zb_hyperz_admit_stream(cmd_buffer->ib,
                                             cmd_buffer->ib_size_dwords,
-                                            device->hyperz_ownership, &site);
-      if (verdict == R300_ZB_HYPERZ_ADMIT)
-         return VK_SUCCESS;
+                                            device->hyperz_ownership, site);
    }
+   return verdict;
+}
+
+int
+r3v_native_hyperz_request_ownership(struct r3v_native_device *device,
+                                    uint32_t *returned_ownership)
+{
+   if (device == NULL || returned_ownership == NULL)
+      return -EINVAL;
+   if (device->hyperz_ownership == R300_ZB_HYPERZ_OWNED) {
+      *returned_ownership = 1u;
+      return 0;
+   }
+   *returned_ownership = 1u;
+   const int result = radeon_drm_vk_device_info_u32(
+      &device->drm, RADEON_INFO_WANT_HYPERZ, returned_ownership);
+   if (result == 0 && *returned_ownership == 1u)
+      device->hyperz_ownership = R300_ZB_HYPERZ_OWNED;
+   return result;
+}
+
+VkResult
+r3v_native_hyperz_admit(struct r3v_native_device *device,
+                        struct r3v_native_cmd_buffer *cmd_buffer,
+                        struct r3v_hyperz_grant_transaction *transaction)
+{
+   struct r300_zb_hyperz_site site;
+   int request_result = 0;
+   uint32_t returned_ownership = 0u;
+   const enum r300_zb_hyperz_verdict verdict =
+      r3v_native_hyperz_submission_prepare(
+         device, cmd_buffer, transaction, &site, &request_result,
+         &returned_ownership);
+   if (verdict == R300_ZB_HYPERZ_ADMIT)
+      return VK_SUCCESS;
+   if (verdict == R300_ZB_HYPERZ_REFUSE_STREAM)
+      return vk_errorf(device, VK_ERROR_DEVICE_LOST,
+                       "r3v-native: HyperZ admission refused: %s",
+                       r300_zb_hyperz_verdict_name(verdict));
    return vk_errorf(device, VK_ERROR_DEVICE_LOST,
                     "r3v-native: HyperZ admission refused at ib[%u] "
                     "(%s = 0x%08x): %s; ownership %s (%s)",
                     site.ib_index, site.row != NULL ? site.row->name : "?",
                     site.value,
                     site.row != NULL ? site.row->kernel_rule : "no row",
-                    r == 0 && want == 1u ? "held" : "withheld by the kernel",
-                    r == 0 ? "RADEON_INFO_WANT_HYPERZ answered"
-                           : strerror(-r));
+                    request_result == 0 && returned_ownership == 1u
+                       ? "held"
+                       : "withheld by the kernel",
+                    request_result == 0 ? "RADEON_INFO_WANT_HYPERZ answered"
+                                        : strerror(-request_result));
 }
 
-void
+bool
 r3v_native_hyperz_release(struct r3v_native_device *device)
 {
    if (device->hyperz_ownership != R300_ZB_HYPERZ_OWNED)
-      return;
+      return true;
    uint32_t release = 0u;
-   (void)radeon_drm_vk_device_info_u32(&device->drm, RADEON_INFO_WANT_HYPERZ,
-                                       &release);
+   const int result = radeon_drm_vk_device_info_u32(
+      &device->drm, RADEON_INFO_WANT_HYPERZ, &release);
+   if (result != 0 || release != 0u)
+      return false;
    device->hyperz_ownership = R300_ZB_HYPERZ_UNOWNED;
+   return true;
+}
+
+bool
+r3v_native_hyperz_submission_finish(
+   struct r3v_native_device *device,
+   const struct r3v_hyperz_grant_transaction *transaction)
+{
+   return !r3v_hyperz_grant_transaction_requires_release(transaction) ||
+          r3v_native_hyperz_release(device);
 }

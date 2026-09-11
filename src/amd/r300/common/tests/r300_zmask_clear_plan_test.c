@@ -360,6 +360,41 @@ check_block_disagreement_refused(void)
              &params, (enum r300_zmask_compression)6, &layout) == -EINVAL);
 }
 
+static void
+check_fast_clear_value_plan(const struct r300_zmask_layout *layout)
+{
+   struct r300_zmask_clear_plan bind_plan;
+   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_FAST_FILL, layout,
+                                      &bind_plan) == 0);
+   struct r300_zmask_clear_plan plan;
+   assert(r300_zmask_fast_clear_plan_build(
+             &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, layout,
+             0x400000u, 0xa5u, &plan) == 0);
+   assert(plan.dword_count == bind_plan.dword_count + 2u);
+   assert(plan.words[0] == PACKET0_HEADER(R300_ZB_DEPTHCLEARVALUE, 1u));
+   assert(plan.words[1] == 0x400000a5u);
+   assert(memcmp(plan.words + 2u, bind_plan.words,
+                 bind_plan.dword_count * sizeof(bind_plan.words[0])) == 0);
+   assert(plan.requires_hyperz_ownership);
+   assert(plan.writes_hyperz_registers);
+   struct r300_zb_hyperz_site site;
+   assert(judge(&plan, R300_ZB_HYPERZ_UNOWNED, &site) ==
+          R300_ZB_HYPERZ_REFUSE_OWNERSHIP);
+   assert(judge(&plan, R300_ZB_HYPERZ_OWNED, &site) == R300_ZB_HYPERZ_ADMIT);
+
+   const struct r300_zmask_clear_plan sentinel = {
+      .words = {0x12345678u},
+      .dword_count = 0x87654321u,
+      .requires_hyperz_ownership = false,
+      .writes_hyperz_registers = false,
+   };
+   plan = sentinel;
+   assert(r300_zmask_fast_clear_plan_build(
+             &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, layout,
+             0x1000000u, 0xa5u, &plan) == -EINVAL);
+   assert(memcmp(&plan, &sentinel, sizeof(plan)) == 0);
+}
+
 int
 main(void)
 {
@@ -399,6 +434,7 @@ main(void)
    check_refusals();
    check_block_disagreement_refused();
    check_z16_linear_cell_gap();
+   check_fast_clear_value_plan(&bound);
 
    printf("r300 zmask clear plan: four stages, ZMASK %u dwords at pitch %u\n",
           bound.dwords, bound.stride_in_pixels);

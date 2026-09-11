@@ -9,6 +9,7 @@
 
 #include "amd/r300/common/r300_compute_verb.h"
 #include "amd/r300/common/r300_rb2d_fill.h"
+#include "amd/r300/common/r300_zb_depth_control_cell.h"
 
 #include "r3v_entrypoints.h"
 #include "r3v_measurement_declaration.h"
@@ -33,6 +34,39 @@ r3v_native_submit_hazard_accepted(void)
 {
    const char *value = getenv("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED");
    return value != NULL && strcmp(value, "1") == 0;
+}
+
+static VkResult
+r3v_native_device_init_zmask_materialize_scratch(
+   struct r3v_native_device *device)
+{
+   struct r3v_native_memory *vertex = &device->zmask_materialize_vertex;
+   struct r3v_native_memory *color = &device->zmask_materialize_color;
+   if (radeon_drm_vk_bo_create(
+          &device->drm, R3V_NATIVE_MEMORY_ALIGNMENT,
+          R3V_NATIVE_MEMORY_ALIGNMENT, RADEON_GEM_DOMAIN_GTT,
+          RADEON_GEM_CPU_ACCESS, false, &vertex->bo) != 0)
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   if (radeon_drm_vk_bo_create(
+          &device->drm, R300_ZB_DEPTH_CONTROL_COLOR_BYTES,
+          R3V_NATIVE_MEMORY_ALIGNMENT, RADEON_GEM_DOMAIN_GTT, 0u, false,
+          &color->bo) != 0) {
+      radeon_drm_vk_bo_free(&device->drm, &vertex->bo);
+      return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
+   }
+   if (radeon_drm_vk_bo_map(&device->drm, &vertex->bo, &vertex->map) != 0) {
+      radeon_drm_vk_bo_free(&device->drm, &color->bo);
+      radeon_drm_vk_bo_free(&device->drm, &vertex->bo);
+      return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+   }
+   memcpy(vertex->map, r300_zmask_materialize_vertices,
+          sizeof(r300_zmask_materialize_vertices));
+   radeon_drm_vk_bo_cache_sync(&device->drm, vertex->map,
+                               sizeof(r300_zmask_materialize_vertices));
+   radeon_drm_vk_bo_unmap(&device->drm, &vertex->bo, vertex->map);
+   vertex->map = NULL;
+   device->zmask_materialize_scratch_initialized = true;
+   return VK_SUCCESS;
 }
 
 /* An empty evidence path has no retention destination.  Treat it like an
@@ -135,6 +169,12 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       exact_gate("R3V_NATIVE_R2VB_GPU_DELIVERY_EXPERIMENTAL");
    device->r2vb_fetched_gate =
       exact_gate("R3V_NATIVE_R2VB_FETCHED_PRODUCER_EXPERIMENTAL");
+   device->zmask_ownership_gate =
+      exact_gate("R3V_NATIVE_ZMASK_OWNERSHIP_EXPERIMENTAL");
+   device->zmask_initialize_gate =
+      exact_gate("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL");
+   device->zmask_fast_clear_gate =
+      exact_gate("R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL");
    uint32_t route_count = 0;
    const struct r300_operation_route_row *routes =
       r300_operation_route_rows(&route_count);
@@ -374,6 +414,7 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->queue.vk.driver_submit = r3v_native_queue_submit;
 
    device->submit_hazard_accepted = r3v_native_submit_hazard_accepted();
+   device->zmask_automatic_qualified = false;
    if (!r3v_native_manifest_dir_copy(device)) {
       vk_queue_finish(&device->queue.vk);
       radeon_drm_vk_device_finish(&device->drm);
@@ -537,6 +578,15 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
       device->plan_replay_active = true;
    }
 
+   if (device->zmask_automatic_qualified ||
+       device->zmask_fast_clear_gate != NULL) {
+      result = r3v_native_device_init_zmask_materialize_scratch(device);
+      if (result != VK_SUCCESS) {
+         r3v_DestroyDevice(r3v_native_device_to_handle(device), pAllocator);
+         return result;
+      }
+   }
+
    *pDevice = r3v_native_device_to_handle(device);
    return VK_SUCCESS;
 }
@@ -579,6 +629,12 @@ r3v_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
       r3v_native_plan_capture_finish(&device->plan_capture);
    }
    r3v_native_hyperz_release(device);
+   if (device->zmask_materialize_color.bo.handle != 0u)
+      radeon_drm_vk_bo_free(&device->drm,
+                            &device->zmask_materialize_color.bo);
+   if (device->zmask_materialize_vertex.bo.handle != 0u)
+      radeon_drm_vk_bo_free(&device->drm,
+                            &device->zmask_materialize_vertex.bo);
    radeon_drm_vk_device_finish(&device->drm);
    vk_device_finish(&device->vk);
    vk_free2(&device->vk.alloc, pAllocator, device);

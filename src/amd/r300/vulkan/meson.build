@@ -1452,6 +1452,34 @@ r3v_native_depth_pipeline_test = executable(
 test('r3v-native-depth-pipeline', r3v_native_depth_pipeline_test,
      suite : ['r3v'])
 
+r3v_native_zmask_fast_clear_selector_test = executable(
+  'r3v_native_zmask_fast_clear_selector_test',
+  files('tests/r3v_native_zmask_fast_clear_selector_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-native-zmask-fast-clear-selector',
+     r3v_native_zmask_fast_clear_selector_test,
+     suite : ['r3v'])
+
+r3v_hyperz_ownership_transaction_test = executable(
+  'r3v_hyperz_ownership_transaction_test',
+  files('tests/r3v_hyperz_ownership_transaction_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r3v-hyperz-ownership-transaction',
+     r3v_hyperz_ownership_transaction_test,
+     suite : ['r3v'])
+
 r3v_native_zb_depth_surface_catalogue_test = executable(
   'r3v_native_zb_depth_surface_catalogue_test',
   files('tests/r3v_native_zb_depth_surface_catalogue_test.c'),
@@ -1551,6 +1579,17 @@ r3v_native_attended_public_zb_depth = executable(
 test('r3v-native-public-zb-depth-fixtures',
      r3v_native_attended_public_zb_depth,
      args : ['--selftest'], suite : ['r3v'])
+
+r3v_native_zmask_public_lifecycle_test = executable(
+  'r3v_native_zmask_public_lifecycle_test',
+  files('tests/r3v_native_zmask_public_lifecycle_test.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args, '-UNDEBUG'],
+  gnu_symbol_visibility : 'hidden',
+)
 
 r3v_native_attended_zb_depth_control = executable(
   'r3v_native_attended_zb_depth_control',
@@ -2037,6 +2076,87 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     'DRM_SHIM_EXPECTED_DSO' : libradeon_noop_drm_shim.full_path(),
   }
   r3v_native_cell_env = environment(r3v_native_cell_vars)
+  r3v_native_hyperz_ownership_queue_test = executable(
+    'r3v_native_hyperz_ownership_queue_test',
+    files('tests/r3v_native_hyperz_ownership_queue_test.c'),
+    include_directories : r3v_native_inc,
+    dependencies : [r3v_native_deps, dep_dl],
+    link_whole : [libr3v_native_impl],
+    link_with : [libradeon_drm_vk],
+    c_args : [no_override_init_args, '-UNDEBUG'],
+    gnu_symbol_visibility : 'hidden',
+  )
+  foreach hyperz_ownership_result : ['success', 'withhold', 'refuse']
+    test(
+      'r3v-native-hyperz-ownership-queue-@0@'.format(
+        hyperz_ownership_result),
+      r3v_native_hyperz_ownership_queue_test,
+      args : [hyperz_ownership_result],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  foreach zmask_initialize_result : [
+    'initialize-success',
+    'initialize-cs-refuse',
+    'initialize-completion-fail',
+  ]
+    test(
+      'r3v-native-zmask-queue-@0@'.format(zmask_initialize_result),
+      r3v_native_hyperz_ownership_queue_test,
+      args : [zmask_initialize_result],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  foreach zmask_fast_clear_result : [
+    'fast-clear-success',
+    'fast-clear-cs-refuse',
+    'fast-clear-completion-fail',
+  ]
+    test(
+      'r3v-native-zmask-queue-@0@'.format(zmask_fast_clear_result),
+      r3v_native_hyperz_ownership_queue_test,
+      args : [zmask_fast_clear_result],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  foreach zmask_materialize_result : [
+    'materialize-success',
+    'materialize-cs-refuse',
+    'materialize-completion-fail',
+  ]
+    test(
+      'r3v-native-zmask-queue-@0@'.format(zmask_materialize_result),
+      r3v_native_hyperz_ownership_queue_test,
+      args : [zmask_materialize_result],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
+  foreach zmask_image_switch_result : [
+    'image-switch-success',
+    'image-switch-cs-refuse',
+  ]
+    test(
+      'r3v-native-zmask-queue-@0@'.format(zmask_image_switch_result),
+      r3v_native_hyperz_ownership_queue_test,
+      args : [zmask_image_switch_result],
+      env : r3v_native_cell_env,
+      depends : [libradeon_noop_drm_shim],
+      timeout : 60,
+      suite : ['r3v'],
+    )
+  endforeach
   # The compute recording calibration runs under the compute gate: the
   # surface the runner records through stands behind it.
   r3v_native_compute_record_env = environment(
@@ -2536,7 +2656,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       r3v_xvfb_wrapper,
       args : [r3v_native_wsi_surface_contract.full_path()],
       env : r3v_native_cell_env,
-      depends : [libradeon_noop_drm_shim],
+      depends : [libradeon_noop_drm_shim,
+                 r3v_native_wsi_surface_contract],
       timeout : 120,
       suite : ['r3v'],
     )
@@ -2558,7 +2679,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
         env : environment(r3v_native_cell_vars + {
           'R3V_WSI_FIXTURE_QUERY_ERROR' : wsi_query,
         }),
-        depends : [libradeon_noop_drm_shim],
+        depends : [libradeon_noop_drm_shim,
+                   r3v_native_wsi_surface_contract],
         timeout : 120,
         suite : ['r3v'],
       )
@@ -2735,6 +2857,7 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
            'VK_DRIVER_FILES' : _dev_icd.full_path(),
            'R3V_DRM_SHIM_SUBSYSTEM_ID' : '1028:022a',
            'R3V_DRM_SHIM_DMI_PRODUCT_NAME' : 'Vostro 1000',
+           'R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL' : '1',
          }),
          depends : [libradeon_noop_drm_shim, libvulkan_r3v, _dev_icd],
          suite : ['r3v'])
@@ -2916,6 +3039,18 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
        files('tests/r3v_native_loader_fill_application.c')],
       include_directories : [inc_include, inc_src,
                              include_directories('tests')],
+      dependencies : [dep_vulkan_loader, dep_dl],
+      c_args : [no_override_init_args],
+    )
+    # Public ZMASK lifecycle qualification application.  The executable
+    # reaches R3V through libvulkan, records one submission per selected
+    # scenario, and retains logical color plus depth and stencil exports.
+    # Driver-internal state and object layouts stay outside its link surface.
+    r3v_native_loader_zmask_lifecycle_application = executable(
+      'r3v_native_loader_zmask_lifecycle_application',
+      files('tests/r3v_native_loader_zmask_lifecycle_application.c'),
+      include_directories : [inc_include, inc_src,
+                             include_directories('.')],
       dependencies : [dep_vulkan_loader, dep_dl],
       c_args : [no_override_init_args],
     )
@@ -3229,6 +3364,62 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
         depends : [r3v_native_loader_fill_application],
         suite : ['r3v'],
       )
+      test(
+        'r3v-native-loader-zmask-lifecycle-application-symbol-audit',
+        prog_python,
+        args : [
+          files('tests/r3v_native_loader_application_symbol_audit.py'),
+          prog_nm_r3v.full_path(),
+          r3v_native_loader_zmask_lifecycle_application.full_path(),
+          '--forbid', 'r3v_',
+          '--forbid', 'r300_',
+          '--forbid', 'radeon_drm_vk_',
+          '--forbid', 'drm_shim_',
+        ],
+        depends : [r3v_native_loader_zmask_lifecycle_application],
+        suite : ['r3v'],
+      )
+      test(
+        'r3v-native-loader-zmask-lifecycle-oracle-calibration',
+        r3v_native_loader_zmask_lifecycle_application,
+        args : ['--self-test'],
+        depends : [r3v_native_loader_zmask_lifecycle_application],
+        suite : ['r3v'],
+      )
+      if prog_readelf_r3v.found()
+        test(
+          'r3v-native-loader-zmask-lifecycle-dependencies',
+          prog_python,
+          args : [
+            files('tests/r3v_native_loader_application_symbol_audit.py'),
+            prog_nm_r3v.full_path(),
+            r3v_native_loader_zmask_lifecycle_application.full_path(),
+            '--readelf', prog_readelf_r3v.full_path(),
+            '--require-needed', 'libvulkan.so.1',
+            '--allow-needed', 'libvulkan.so.1',
+            '--allow-needed', 'libc.so.6',
+          ],
+          depends : [r3v_native_loader_zmask_lifecycle_application],
+          suite : ['r3v'],
+        )
+        test(
+          'r3v-native-loader-zmask-lifecycle-dependencies-known-bad',
+          find_program('sh'),
+          args : [
+            '-c', '"$1" "$2" "$3" "$4" --readelf "$5" ' +
+                  '--require-needed libvulkan.so.1 ' +
+                  '--allow-needed libvulkan.so.1; test $? -eq 1',
+            'assert-verdict',
+            prog_python.full_path(),
+            files('tests/r3v_native_loader_application_symbol_audit.py'),
+            prog_nm_r3v.full_path(),
+            r3v_native_loader_zmask_lifecycle_application.full_path(),
+            prog_readelf_r3v.full_path(),
+          ],
+          depends : [r3v_native_loader_zmask_lifecycle_application],
+          suite : ['r3v'],
+        )
+      endif
     endif
     # The fill route's exact-submit-object replay through the full CS
     # parser/tracker: parser-owned mutations reject, and the 2D destination
@@ -3486,6 +3677,16 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
     r3v_native_attended_public_zb_depth,
     args : [meson.current_build_dir(), '--persistence', '--record-only'],
     env : r3v_native_cell_env,
+    depends : [libradeon_noop_drm_shim],
+    timeout : 60,
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-native-zmask-public-lifecycle',
+    r3v_native_zmask_public_lifecycle_test,
+    env : environment(r3v_native_cell_vars + {
+      'R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL' : '1',
+    }),
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
     suite : ['r3v'],
@@ -3794,7 +3995,9 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
       c_args : [no_override_init_args],
       gnu_symbol_visibility : 'hidden',
     ),
-    env : r3v_native_cell_env,
+    env : environment(r3v_native_cell_vars + {
+      'R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL' : '1',
+    }),
     depends : [libradeon_noop_drm_shim],
     timeout : 60,
     suite : ['r3v'],
