@@ -3,7 +3,7 @@
   "artifact": "R3V Vulkan 1.0 core implementation tracker",
   "sheet": "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
   "reviewed_source": {
-    "mesa_commit": "0b66d14e758c80808e7cc661c008b2a834d12fba",
+    "mesa_commit": "0d66a5059f0519f8923696c8e137f5c1b846b325",
     "driver_root": "src/amd/r300/vulkan"
   },
   "conformance_boundary": "Each status records a static source review. A bounded or refused row establishes neither Vulkan conformance nor RS485M execution. A conformance claim requires an executed CTS result with the source, ICD, and target identity retained.",
