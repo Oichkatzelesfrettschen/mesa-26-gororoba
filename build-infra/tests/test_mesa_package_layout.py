@@ -76,10 +76,108 @@ def staged_payload(configured_build: Path) -> Path:
 def test_complete_stock_package(configured_build: Path, staged_payload: Path) -> None:
     layout.publish_stage(configured_build, staged_payload)
     layout.verify_stage(configured_build, staged_payload, None)
-    assert (
+    assert (staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json").is_file()
+    assert not (
         staged_payload / "usr/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json"
-    ).is_file()
-    assert list((staged_payload / "usr/share/vulkan/icd.d").glob("*.json")) == []
+    ).exists()
+
+
+@pytest.mark.parametrize(
+    "library_path",
+    (
+        "/usr/lib/libvulkan_r3v.so",
+        "../../../lib/libvulkan_r3v.so",
+        "libvulkan_r3v.so",
+    ),
+)
+def test_r3v_loader_artifact_resolves_packaged_library(
+    configured_build: Path, staged_payload: Path, library_path: str
+) -> None:
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    manifest.write_text(json.dumps({"ICD": {"library_path": library_path}}))
+    layout.publish_stage(configured_build, staged_payload)
+    layout.verify_stage(configured_build, staged_payload, None)
+
+
+@pytest.mark.parametrize(
+    "library_path",
+    (
+        "/tmp/build/libvulkan_r3v.so",
+        "../../../../tmp/stage/libvulkan_r3v.so",
+        "libvulkan_other.so",
+    ),
+)
+def test_r3v_loader_artifact_rejects_other_library(
+    configured_build: Path, staged_payload: Path, library_path: str
+) -> None:
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    manifest.write_text(json.dumps({"ICD": {"library_path": library_path}}))
+    with pytest.raises(ValueError, match="packaged driver library"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_private_directory(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    private_manifest = (
+        staged_payload / "usr/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json"
+    )
+    private_manifest.parent.mkdir(parents=True)
+    private_manifest.write_text(
+        '{"ICD": {"library_path": "/usr/lib/libvulkan_r3v.so"}}\n'
+    )
+    with pytest.raises(ValueError, match="standard loader directory"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+@pytest.mark.parametrize(
+    "document",
+    (
+        "{",
+        "{}",
+        '{"ICD": []}',
+        '{"ICD": {}}',
+        '{"ICD": {"library_path": ""}}',
+        '{"ICD": {"library_path": 7}}',
+    ),
+)
+def test_r3v_loader_artifact_rejects_invalid_manifest(
+    configured_build: Path, staged_payload: Path, document: str
+) -> None:
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    manifest.write_text(document)
+    with pytest.raises(ValueError, match="manifest"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_duplicate_manifest(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    duplicate = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.other.json"
+    duplicate.write_text('{"ICD": {"library_path": "/usr/lib/libvulkan_r3v.so"}}\n')
+    with pytest.raises(ValueError, match="one manifest"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_mutation_after_qualification(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    layout.publish_stage(configured_build, staged_payload)
+    manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
+    manifest.write_text(
+        '{"ICD": {"library_path": "/usr/lib/libvulkan_r3v.so"}, "changed": true}\n'
+    )
+    with pytest.raises(ValueError, match="changed after qualification"):
+        layout.verify_stage(configured_build, staged_payload, None)
+
+
+def test_r3v_loader_artifact_library_mutation_after_qualification(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    layout.publish_stage(configured_build, staged_payload)
+    (staged_payload / "usr/lib/libvulkan_r3v.so").write_text("changed\n")
+    with pytest.raises(ValueError, match="changed after qualification"):
+        layout.verify_stage(configured_build, staged_payload, None)
 
 
 @pytest.mark.parametrize("relative", layout.REQUIRED_ARTIFACTS)

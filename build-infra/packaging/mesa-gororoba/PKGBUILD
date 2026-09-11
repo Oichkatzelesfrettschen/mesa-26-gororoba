@@ -3,7 +3,7 @@
 pkgname=mesa-gororoba
 epoch=2
 pkgver=26.2.0
-pkgrel=23
+pkgrel=25
 pkgdesc='Mesa r300/R3V stock system replacement (release, x86-64 baseline)'
 _variant=release
 _profile=4_r300_full_release_x86_64v1-clang22-distcc-cache

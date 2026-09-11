@@ -514,11 +514,12 @@ Pacman installs the selected artifact and owns replacement and removal.
 
 During migration, inspect package ownership before removing obsolete installed
 ASan/O0 packages or alternate-prefix residue. The instrumentation-only
-debug-tools package has no driver dependency. The core package ships the
-experimental R3V manifest beneath `usr/share/mesa-gororoba/vulkan/icd.d` and
-selects it with `mesa-gororoba-run`; global Vulkan selection remains with the
-loader. A 32-bit RADV manifest belongs with a package that supplies the matching
-32-bit driver; the core 64-bit package supplies neither artifact.
+debug-tools package has no driver dependency. The core package installs the
+generated R3V manifest beneath `usr/share/vulkan/icd.d`, where the standard
+loader discovers it without a wrapper or driver-selection override.
+`mesa-gororoba-run` remains available for prefix-specific development. A
+32-bit RADV manifest belongs with a package that supplies the matching 32-bit
+driver; the core 64-bit package supplies neither artifact.
 
 After replacement, verify `/usr/lib/pkgconfig/dri.pc` exports `/usr/lib/dri`,
 check Mesa/Xorg package ownership, restart the display stack, and execute the

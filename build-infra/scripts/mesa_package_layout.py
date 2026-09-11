@@ -298,19 +298,48 @@ def check_stage(stage: Path) -> None:
             check_elf(path, installed_path)
 
 
+def check_r3v_manifest(stage: Path) -> None:
+    manifest_directory = stage / "usr/share/vulkan/icd.d"
+    manifests = sorted(manifest_directory.glob("r3v_icd*.json"))
+    private_manifests = list(
+        (stage / "usr/share/mesa-gororoba/vulkan/icd.d").glob("r3v_icd*.json")
+    )
+    if len(manifests) != 1 or private_manifests:
+        raise ValueError(
+            "r3v package requires one manifest in the standard loader directory"
+        )
+
+    manifest = manifests[0]
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("r3v package manifest is unreadable") from error
+    icd = document.get("ICD")
+    if not isinstance(icd, dict):
+        raise ValueError("r3v package manifest lacks its ICD object")
+    library_path = icd.get("library_path")
+    if not isinstance(library_path, str) or not library_path:
+        raise ValueError("r3v package manifest lacks ICD.library_path")
+
+    expected_library = (stage / "usr/lib/libvulkan_r3v.so").resolve(strict=True)
+    if library_path.startswith("/"):
+        resolved_library = (stage / library_path.lstrip("/")).resolve()
+    elif "/" in library_path:
+        resolved_library = (manifest.parent / library_path).resolve()
+    else:
+        resolved_library = (stage / "usr/lib" / library_path).resolve()
+    if resolved_library != expected_library:
+        raise ValueError(
+            "r3v package manifest does not resolve to the packaged driver library"
+        )
+
+
 def publish_stage(builddir: Path, stage: Path) -> None:
     identity, options = check_configuration(builddir)
     if identity["package_destdir"] != str(stage):
         raise ValueError("staging destination disagrees with the build identity")
     check_stage(stage)
-    manifests = sorted((stage / "usr/share/vulkan/icd.d").glob("r3v_icd*.json"))
-    if len(manifests) != 1:
-        raise ValueError(
-            "r3v package requires exactly one staged architecture manifest"
-        )
-    destination = stage / "usr/share/mesa-gororoba/vulkan/icd.d"
-    destination.mkdir(parents=True, exist_ok=True)
-    manifests[0].rename(destination / manifests[0].name)
+    check_r3v_manifest(stage)
     record = {
         key: identity[key]
         for key in (
@@ -323,9 +352,9 @@ def publish_stage(builddir: Path, stage: Path) -> None:
     }
     record["options"] = options
     record["sha256"] = payload_hashes(stage)
-    (stage / "usr/share/mesa-gororoba/build-identity.json").write_text(
-        json.dumps(record, indent=2, sort_keys=True) + "\n"
-    )
+    receipt = stage / "usr/share/mesa-gororoba/build-identity.json"
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    receipt.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 
 
 def payload_hashes(stage: Path) -> dict[str, dict[str, str]]:
@@ -379,13 +408,7 @@ def verify_stage(builddir: Path, stage: Path, expected_profile: str | None) -> N
         raise ValueError(
             "staged package payload or configuration changed after qualification"
         )
-    manifests = list(
-        (stage / "usr/share/mesa-gororoba/vulkan/icd.d").glob("r3v_icd*.json")
-    )
-    if len(manifests) != 1 or list((stage / "usr/share/vulkan/icd.d").glob("*.json")):
-        raise ValueError(
-            "experimental R3V selection must remain scoped to its launcher"
-        )
+    check_r3v_manifest(stage)
 
 
 def main() -> int:

@@ -4,7 +4,9 @@ post_install() {
   cat <<'EOF'
 Mesa owns its selected release or debug payload under /usr.
 The r300/zink Gallium drivers and R3V library share the stock GLX/EGL/GBM paths.
-The R3V manifest is selected explicitly with mesa-gororoba-run.
+The standard Vulkan loader discovers the R3V manifest under
+/usr/share/vulkan/icd.d. mesa-gororoba-run remains available for
+prefix-specific development selection.
 Sanitizer experiments use build-owned staging through build-infra.
 RS482 hosts using xf86-video-ati need the packaged DRI3 policy copied from
   /usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf
