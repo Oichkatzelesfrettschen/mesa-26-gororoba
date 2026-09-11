@@ -613,7 +613,10 @@ if with_tests
                        'docs/hardware/r3v-vulkan-1-0-core-sheet.json',
             '--tracker', meson.project_source_root() /
                          'docs/hardware/r3v-vulkan-1-0-core-implementation-tracker.json',
-            '--source-root', meson.project_source_root()],
+            '--source-root', meson.project_source_root(),
+            '--repository-root',
+            meson.get_external_property('mesa_source_repository_root',
+                                        meson.project_source_root())],
     suite : ['r3v'],
   )
   # docs/hardware/r3v-wsi-denominator.md "Retained checks that pin the

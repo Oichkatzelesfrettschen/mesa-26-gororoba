@@ -10,7 +10,7 @@ it cannot turn source presence into a conformance verdict.
 
 Usage:
   r3v_vulkan_1_0_core_tracker_audit.py --sheet PATH --tracker PATH \
-      --source-root PATH
+      --source-root PATH [--repository-root PATH]
   r3v_vulkan_1_0_core_tracker_audit.py --selftest
 """
 
@@ -573,6 +573,7 @@ def main(argv=None):
     parser.add_argument("--tracker", type=Path)
     parser.add_argument("--registry-xml", type=Path)
     parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--repository-root", type=Path)
     parser.add_argument("--selftest", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -586,7 +587,7 @@ def main(argv=None):
             read_json(args.sheet),
             read_json(args.tracker),
             args.registry_xml,
-            source_root=args.source_root,
+            source_root=args.repository_root or args.source_root,
         )
         print(
             "r3v_vulkan_1_0_core_tracker_audit: "

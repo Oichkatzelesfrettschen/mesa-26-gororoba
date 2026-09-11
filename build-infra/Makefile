@@ -1895,6 +1895,9 @@ configure: source-root-check vostro-prefix-check
 		[ -z "$$llvm_nm_cmd" ] || printf "nm = '%s'\n" "$$llvm_nm_cmd"; \
 		[ -z "$$llvm_strip_cmd" ] || printf "strip = '%s'\n" "$$llvm_strip_cmd"; \
 		[ -z "$$llvm_objcopy_cmd" ] || printf "objcopy = '%s'\n" "$$llvm_objcopy_cmd"; \
+		echo; \
+		echo "[properties]"; \
+		"$(PYTHON)" -c 'import sys; path = sys.argv[1].replace(chr(92), chr(92) * 2).replace(chr(39), chr(92) + chr(39)); print("mesa_source_repository_root = " + chr(39) + path + chr(39))' "$(TOPSRC)"; \
 	} > "$(TOOLCHAIN_NATIVE)"; \
 	echo "wrote Meson toolchain overlay: $(TOOLCHAIN_NATIVE) ($$toolchain_label, $(COMPILER_CHAIN))"; \
 	test -f "$(ENVFILE)" && . "$(ENVFILE)" || true; \
@@ -3302,6 +3305,11 @@ source-root-selection-test:
 	}; \
 	test -f "$$identity_builddir/mesa-toolchain.meson" || { \
 		echo "FAIL  configure omitted the selected build toolchain" >&2; \
+		exit 1; \
+	}; \
+	grep -F "mesa_source_repository_root = '$$source_root'" \
+		"$$identity_builddir/mesa-toolchain.meson" >/dev/null || { \
+		echo "FAIL  configure omitted the source repository root property" >&2; \
 		exit 1; \
 	}; \
 	echo "OK    derived build controls override command-line forgeries"; \
