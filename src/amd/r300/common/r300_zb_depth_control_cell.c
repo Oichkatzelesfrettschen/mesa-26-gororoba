@@ -48,9 +48,9 @@ const float
 
 const float
    r300_zmask_materialize_vertices[R300_ZMASK_MATERIALIZE_VERTEX_DWORDS] = {
-      0.0f,   0.0f, 0.0f, 1.0f,
-      128.0f, 0.0f, 0.0f, 1.0f,
-      0.0f, 128.0f, 0.0f, 1.0f,
+        0.0f,   0.0f, R300_ZMASK_MATERIALIZE_Z, 1.0f,
+      128.0f,   0.0f, R300_ZMASK_MATERIALIZE_Z, 1.0f,
+        0.0f, 128.0f, R300_ZMASK_MATERIALIZE_Z, 1.0f,
 };
 
 static void

@@ -154,6 +154,26 @@ struct r300_zb_depth_control_ib {
 extern const float
    r300_zb_depth_control_vertices[R300_ZB_DEPTH_CONTROL_VERTEX_DWORDS];
 
+/* The window-space depth the materialization triangle carries, a
+ * pretransformed Z that VAP_VTE_CNTL's VTX_Z_FMT hands the ZB.  0.375 is
+ * exact in binary and round(0.375 * (2^24 - 1)) and 0.375 * 2^24 are
+ * both 0x600000, so the code is one value whichever scaling the depth
+ * path applies.
+ *
+ * The code stands apart from every value the ZMASK lifecycle programs --
+ * the backing 0x200000, the fast-clear 0x800000, the update 0x400000 --
+ * so depth memory after materialization names which path wrote it: the
+ * clear code says the metadata substituted, this code says the fragment
+ * depth filled, and the backing code says nothing wrote at all.
+ *
+ * On RS485M the materialize draw left the fast-clear code in depth
+ * memory with the quad's own code absent, so the fragment depth reaches
+ * no tile and a distinct code is inert there.  A run that finds this
+ * code in depth memory reports a fill that destroys the surface, and the
+ * constant returns to the clear code the substitution delivers.
+ */
+#define R300_ZMASK_MATERIALIZE_Z 0.375f
+
 /* One oversized window-space triangle covers every sample center in the
  * 64x64 target.  The materialization path uses three FLOAT_4 vertices and
  * ignores application viewport, scissor, sample-mask, and depth state.
