@@ -78,14 +78,6 @@ emit_bind_and_clear(struct r300_pm4_builder *b,
    const uint32_t bind[] = {0u, layout->stride_in_pixels};
    r300_pm4_packet0(b, R300_ZB_ZMASK_OFFSET, bind, 2u);
 
-   /* The autoincrementing ZMASK RAM access indices.  The kernel's HyperZ
-    * table carries no row for either, so both admit on their own; the
-    * plan writes them so the RAM window the clear fills starts where the
-    * bind placed it rather than where a predecessor left the index.
-    */
-   r300_pm4_reg(b, R300_ZB_ZMASK_WRINDEX, 0u);
-   r300_pm4_reg(b, R300_ZB_ZMASK_RDINDEX, 0u);
-
    /* The plane-equation format the block size names.  It and the
     * 3D_CLEAR_ZMASK payload below are read off one layout, so the
     * register and the coverage describe one surface: the 64x64 reference
@@ -100,6 +92,10 @@ emit_bind_and_clear(struct r300_pm4_builder *b,
 
    r300_pm4_reg(b, R300_ZB_BW_CNTL, zb_bw_cntl);
 
+   /* The packet payload carries its own start index.  r300_packet0_check
+    * rejects the ZMASK index data ports, so command streams leave the
+    * autoincrementing register interface untouched.
+    */
    const uint32_t clear[ZMASK_CLEAR_PAYLOAD_DWORDS] = {0u, layout->dwords,
                                                        0u};
    r300_pm4_packet3(b, R300_PACKET3_3D_CLEAR_ZMASK, clear,

@@ -121,7 +121,7 @@ word.
 | --- | --- | --- | --- |
 | A | ordinary depth draw | none | not required |
 | B | ownership acquire | none | required |
-| C | ZMASK bind and clear | `ZB_ZMASK_OFFSET`, `ZB_ZMASK_PITCH`, `ZB_ZMASK_WRINDEX`, `ZB_ZMASK_RDINDEX`, `GB_Z_PEQ_CONFIG`, `ZB_BW_CNTL` = 0, PACKET3 `3D_CLEAR_ZMASK` | required |
+| C | ZMASK bind and clear | `ZB_ZMASK_OFFSET`, `ZB_ZMASK_PITCH`, `GB_Z_PEQ_CONFIG`, `ZB_BW_CNTL` = 0, PACKET3 `3D_CLEAR_ZMASK` | required |
 | D | fast fill | stage C with `ZB_BW_CNTL` = `FAST_FILL_ENABLE` | required |
 | E | compressed read | stage C with `ZB_BW_CNTL` = `FAST_FILL_ENABLE \| RD_COMP_ENABLE` | required |
 | F | compressed write | stage C with `ZB_BW_CNTL` = `FAST_FILL_ENABLE \| RD_COMP_ENABLE \| WR_COMP_ENABLE` | required |

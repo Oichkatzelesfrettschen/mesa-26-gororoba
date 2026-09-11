@@ -169,20 +169,19 @@ check_bind_stage(enum r300_zmask_clear_stage stage, uint32_t expected_bw_cntl,
    assert(plan.requires_hyperz_ownership);
    assert(plan.writes_hyperz_registers);
 
-   /* Bind run of three, two two-dword index writes, the two-dword
-    * GB_Z_PEQ_CONFIG and ZB_BW_CNTL writes, and the four-dword clear
-    * packet.
+   /* Bind run of three, the two-dword GB_Z_PEQ_CONFIG and ZB_BW_CNTL
+    * writes, and the four-dword clear packet.
     */
-   assert(plan.dword_count == 15);
+   assert(plan.dword_count == 11);
+   for (uint32_t word = 0; word < plan.dword_count; word++) {
+      assert(plan.words[word] != PACKET0_HEADER(R300_ZB_ZMASK_WRINDEX, 1));
+      assert(plan.words[word] != PACKET0_HEADER(R300_ZB_ZMASK_RDINDEX, 1));
+   }
 
    uint32_t i = 0;
    check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_OFFSET, 2));
    check_next_word(&plan, &i, 0u);
    check_next_word(&plan, &i, layout->stride_in_pixels);
-   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_WRINDEX, 1));
-   check_next_word(&plan, &i, 0u);
-   check_next_word(&plan, &i, PACKET0_HEADER(R300_ZB_ZMASK_RDINDEX, 1));
-   check_next_word(&plan, &i, 0u);
    check_next_word(&plan, &i, PACKET0_HEADER(R300_GB_Z_PEQ_CONFIG, 1));
    check_next_word(
       &plan, &i,
@@ -473,8 +472,8 @@ check_compressed_stages(void)
    assert(r300_zmask_clear_plan_build_at_block(
              R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED, R300_ZCOMP_8X8, &eight,
              &plan) == 0);
-   assert(plan.words[8] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8);
-   assert(plan.words[13] == eight.dwords);
+   assert(plan.words[4] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8);
+   assert(plan.words[9] == eight.dwords);
    assert(r300_zmask_clear_plan_build_at_block(
              R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED, R300_ZCOMP_8X8, &four,
              &plan) == -EINVAL);
