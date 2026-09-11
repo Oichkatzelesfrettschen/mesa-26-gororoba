@@ -35,6 +35,13 @@ _package_paths() {
   _source_root=${MESA_PACKAGE_SRCROOT:-${srcdir}/mesa-source}
   _control_root=${MESA_PACKAGE_CONTROL_ROOT:-${_source_root}}
   local fetched_commit selected_commit
+  if [[ -z ${PYTHON:-} ]]; then
+    echo 'Mesa packaging requires caller-selected PYTHON.' >&2
+    return 1
+  fi
+  PYTHON=$(MESA_PYTHON_INPUT="$PYTHON" \
+    sh "${_control_root}/build-infra/scripts/resolve-python-interpreter.sh") || return 1
+  export PYTHON
   fetched_commit=$(git -c core.fsmonitor=false -C "${srcdir}/mesa-source" rev-parse HEAD) || return 1
   selected_commit=$(git -c core.fsmonitor=false -C "${_source_root}" rev-parse HEAD) || return 1
   if [[ $fetched_commit != "$selected_commit" ]]; then
@@ -56,7 +63,8 @@ _package_make() {
     PROFILE="${_profile}" PREFIX=/usr TOPSRC="${_source_root}" \
     BUILD_ROOT="${_build_root}" BUILDDIR="${_builddir}" \
     PACKAGE_PAYLOAD_ROOT="${srcdir}" PACKAGE_NAME="${pkgname}" \
-    REPRODUCIBLE_RUN="${MESA_PACKAGE_REPRODUCIBLE_RUN:-0}"
+    REPRODUCIBLE_RUN="${MESA_PACKAGE_REPRODUCIBLE_RUN:-0}" \
+    PYTHON="${PYTHON}"
 }
 
 build() {
@@ -73,18 +81,18 @@ build() {
 check() {
   _package_paths || return 1
   local vulkan_dir=${_source_root}/src/amd/r300/vulkan
-  python3 "${_control_root}/build-infra/scripts/mesa_package_layout.py" config \
+  "$PYTHON" "${_control_root}/build-infra/scripts/mesa_package_layout.py" config \
     --builddir "${_builddir}" || return 1
   if [[ -n ${MESA_PACKAGE_BUILDDIR:-} ]]; then
     _package_make test MESON_TEST_ARGS=--no-rebuild || return 1
   else
     _package_make test || return 1
   fi
-  python3 "${vulkan_dir}/tests/r3v_native_advertised_surface_audit.py" --selftest || return 1
-  python3 "${vulkan_dir}/tests/r3v_native_advertised_surface_audit.py" \
+  "$PYTHON" "${vulkan_dir}/tests/r3v_native_advertised_surface_audit.py" --selftest || return 1
+  "$PYTHON" "${vulkan_dir}/tests/r3v_native_advertised_surface_audit.py" \
     --source "${vulkan_dir}/r3v_physical_device.c" || return 1
-  python3 "${vulkan_dir}/tests/r3v_qualification_inventory.py" --selftest || return 1
-  python3 "${vulkan_dir}/tests/r3v_qualification_inventory.py" "${_builddir}" --require-tests || return 1
+  "$PYTHON" "${vulkan_dir}/tests/r3v_qualification_inventory.py" --selftest || return 1
+  "$PYTHON" "${vulkan_dir}/tests/r3v_qualification_inventory.py" "${_builddir}" --require-tests || return 1
   # Staging runs before fakeroot so build ownership checks use the real account.
   if [[ -e ${_stage}/usr/share/mesa-gororoba/build-identity.json ]]; then
     _package_make clean-package-stage || return 1
@@ -95,7 +103,7 @@ check() {
 
 package() {
   _package_paths from-receipt || return 1
-  python3 "${_control_root}/build-infra/scripts/mesa_package_layout.py" verify \
+  "$PYTHON" "${_control_root}/build-infra/scripts/mesa_package_layout.py" verify \
     --builddir "${_builddir}" --stage "${_stage}" --profile "${_profile}" --source-commit "${_selected_commit}" || return 1
   cp -a "${_stage}/." "${pkgdir}/" || return 1
 }

@@ -45,21 +45,16 @@ print(platform.python_implementation(), sys.version_info.major, sys.version_info
    printf '%s\n' "$executable"
 }
 
-if [ -n "${MESA_PYTHON_INPUT:-}" ]; then
-   if resolve_executable "$MESA_PYTHON_INPUT"; then
-      exit 0
-   fi
-   printf 'python-interpreter: %s is missing or outside CPython 3.12 through 3.14\n' \
-      "$MESA_PYTHON_INPUT" >&2
+if [ -z "${MESA_PYTHON_INPUT:-}" ]; then
+   printf '%s\n' \
+      'python-interpreter: PYTHON must name a CPython 3.12 through 3.14 executable' >&2
    exit 1
 fi
 
-for candidate in python3.14 python3.13 python3.12 python3 python; do
-   if resolve_executable "$candidate"; then
-      exit 0
-   fi
-done
+if resolve_executable "$MESA_PYTHON_INPUT"; then
+   exit 0
+fi
 
-printf '%s\n' \
-   'python-interpreter: PATH contains no CPython 3.12 through 3.14 executable' >&2
+printf 'python-interpreter: %s is missing or outside CPython 3.12 through 3.14\n' \
+   "$MESA_PYTHON_INPUT" >&2
 exit 1

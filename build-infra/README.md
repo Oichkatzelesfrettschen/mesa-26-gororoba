@@ -8,6 +8,12 @@ evaluation.  Parse-time path inputs travel as directly quoted environment
 assignments because GNU Make before 4.4 does not place Makefile `export` values
 in the environment of every `$(shell ...)` expansion.
 
+Every Make invocation requires `PYTHON=/path/to/supported-cpython`.  The build
+controller validates that caller-selected executable as CPython 3.12 through
+3.14, normalizes its path, and exports the same executable to recursive Make
+and package callbacks.  The controller never searches `PATH` for an alternate
+Python interpreter.
+
 The Make process is the caller execution boundary.  GNU Make evaluates
 immediate command-line assignments using `:=`, `::=`, `:::=`, or `!=` before
 the repository Makefile loads, so those operators receive trusted operator

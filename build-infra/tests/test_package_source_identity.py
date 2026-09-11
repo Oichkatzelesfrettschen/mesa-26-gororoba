@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,7 @@ def package_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         GIT_CONFIG_SYSTEM="/dev/null",
         GIT_CONFIG_NOSYSTEM="1",
         PYTHONDONTWRITEBYTECODE="1",
+        PYTHON=sys.executable,
         COMPILER_CHAIN="direct",
         COMPILER_FAMILY="llvm",
         HOSTENV="package-fixture",
@@ -121,6 +123,20 @@ def run_callback(
     )
 
 
+@pytest.mark.parametrize("selected_python", (None, ""))
+def test_package_callbacks_require_caller_selected_python(
+    package_fixture: tuple[Path, dict[str, str]], selected_python: str | None
+) -> None:
+    root, environment = package_fixture
+    if selected_python is None:
+        environment.pop("PYTHON", None)
+    else:
+        environment["PYTHON"] = selected_python
+    result = run_callback(root, environment, "build")
+    assert result.returncode != 0
+    assert "requires caller-selected PYTHON" in result.stdout + result.stderr
+
+
 def test_default_package_build_records_source_control_identity(
     package_fixture: tuple[Path, dict[str, str]],
 ) -> None:
@@ -206,13 +222,24 @@ def test_repack_callback_preserves_objects_during_meson_tests(
     before = object_file.read_bytes()
     if repack:
         environment["MESA_PACKAGE_BUILDDIR"] = str(object_file.parent)
+    fixture_python = root / "bin/package-python"
+    fixture_python.write_text(
+        "#!/bin/sh\n"
+        "case \"$1\" in\n"
+        "-c|*/source_root_control.py|*/meson_profile_dflags.py)\n"
+        "  exec \"$REAL_PYTHON\" \"$@\" ;;\n"
+        "*) exit 0 ;;\n"
+        "esac\n"
+    )
+    fixture_python.chmod(0o755)
+    environment["REAL_PYTHON"] = sys.executable
+    environment["PYTHON"] = str(fixture_python)
     result = run_callback(
         root,
         environment,
         "eval \"$(declare -f _package_make | sed '1s/_package_make/_original_package_make/')\"; "
         '_package_make() { case "$1" in test) _original_package_make "$@" ;; esac; }; '
-        'python3() { case "$1" in */source_root_control.py|*/meson_profile_dflags.py) '
-        'command python3 "$@" ;; esac; }; check',
+        "check",
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (object_file.read_bytes() == before) is repack
