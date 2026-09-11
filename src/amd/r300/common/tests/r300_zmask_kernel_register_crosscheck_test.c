@@ -15,12 +15,15 @@
  *
  * The walk here reads the kernel data rather than
  * r300_zb_hyperz_admission.c, so the two tables are independent
- * readings of one rule: the cross-tie below asserts that the admission
- * model forbids exactly the plan registers the kernel data rejects.  A
- * plan that regains the ZMASK RAM index ports fails both.
+ * readings of one rule: every plan stream is judged by both, and the two
+ * must agree.  A plan that regains the ZMASK RAM index ports fails both.
+ *
+ * Every check reaches main through a count or a bool that main compares
+ * against the shape it expects, and every call that fills an output runs
+ * in an if rather than inside an assert.  So the verdict holds under a
+ * compile that discards assertions, and the asserts serve to name which
+ * check failed.
  */
-
-/* The asserts carry this test's verdicts, so they stay live under NDEBUG. */
 #undef NDEBUG
 
 #include "r300_kernel_packet0_authority.h"
@@ -52,8 +55,7 @@ enum crosscheck_verdict {
    CROSSCHECK_FORBIDDEN_REGISTER,
    /* A PACKET0 register at or above the safe bitmap's extent. */
    CROSSCHECK_REGISTER_RANGE,
-   /* A type-3 opcode outside the set r300_packet3_check authorizes for
-    * a ZMASK stream. */
+   /* A type-3 opcode outside the two a ZMASK plan emits. */
    CROSSCHECK_UNKNOWN_OPCODE,
    /* A header running past the end of the stream, or a type-1 packet. */
    CROSSCHECK_MALFORMED,
@@ -64,9 +66,12 @@ struct crosscheck_site {
    uint32_t reg_or_opcode;
 };
 
-/* r300_packet3_check authorizes 3D_CLEAR_ZMASK for an owner, and the
- * builder emits the type-3 NOP that carries a BO reference.  Every other
- * opcode is outside what a ZMASK plan is allowed to reach. */
+/* The two opcodes a ZMASK plan emits: 3D_CLEAR_ZMASK, which
+ * r300_packet3_check authorizes for an owner, and the type-3 NOP that
+ * carries a BO reference.  The scope is a plan stream rather than a whole
+ * command stream, so the draw-path opcodes an application also submits --
+ * 3D_LOAD_VBPNTR, 3D_DRAW_VBUF_2 -- lie outside it by construction and
+ * r300_packet3_check stays the authority for them. */
 static bool
 opcode_authorized(uint32_t opcode)
 {
@@ -131,7 +136,7 @@ crosscheck_stream(const uint32_t *ib, uint32_t dwords,
  * out-of-range register for the driver's own table either.  Ownership is
  * held, so the gated rows answer ADMIT and the two new verdicts stand
  * alone. */
-static void
+static bool
 cross_tie(const uint32_t *ib, uint32_t dwords)
 {
    struct crosscheck_site site;
@@ -143,12 +148,14 @@ cross_tie(const uint32_t *ib, uint32_t dwords)
       r300_zb_hyperz_admit_stream(ib, dwords, R300_ZB_HYPERZ_OWNED,
                                   &model_site);
    assert(model == R300_ZB_HYPERZ_ADMIT);
+   return kernel == CROSSCHECK_ADMIT && model == R300_ZB_HYPERZ_ADMIT;
 }
 
 /* The 64x64 Z24 reference level on one RS480 pipe, resolved at the block
  * the caller names. */
-static struct r300_zmask_layout
-reference_layout(enum r300_zmask_compression block)
+static bool
+reference_layout(enum r300_zmask_compression block,
+                 struct r300_zmask_layout *out)
 {
    const struct r300_zmask_layout_params params = {
       .stride_in_pixels = 64,
@@ -162,10 +169,10 @@ reference_layout(enum r300_zmask_compression block)
       .pipes = 1,
       .zmask_ram_dwords_per_pipe = RV3xx_ZMASK_SIZE,
    };
-   struct r300_zmask_layout layout;
-   assert(r300_zmask_layout_compute_at_block(&params, block, &layout) == 0);
-   assert(layout.fits_zmask_ram);
-   return layout;
+   if (r300_zmask_layout_compute_at_block(&params, block, out) != 0)
+      return false;
+   assert(out->fits_zmask_ram);
+   return out->fits_zmask_ram;
 }
 
 /* Every stage of the ladder, at every block the stage admits, plus the
@@ -174,8 +181,10 @@ static uint32_t
 check_clear_plans(void)
 {
    uint32_t streams = 0u;
-   const struct r300_zmask_layout four = reference_layout(R300_ZCOMP_4X4);
-   const struct r300_zmask_layout eight = reference_layout(R300_ZCOMP_8X8);
+   struct r300_zmask_layout four, eight;
+   if (!reference_layout(R300_ZCOMP_4X4, &four) ||
+       !reference_layout(R300_ZCOMP_8X8, &eight))
+      return 0u;
 
    for (int s = R300_ZMASK_CLEAR_STAGE_DEPTH_ONLY;
         s <= R300_ZMASK_CLEAR_STAGE_WRITE_COMPRESSED; s++) {
@@ -189,19 +198,21 @@ check_clear_plans(void)
          const struct r300_zmask_layout *layout =
             block == R300_ZCOMP_8X8 ? &eight : &four;
          struct r300_zmask_clear_plan plan;
-         assert(r300_zmask_clear_plan_build_at_block(stage, block, layout,
-                                                     &plan) == 0);
-         cross_tie(plan.words, plan.dword_count);
-         streams++;
+         const int built =
+            r300_zmask_clear_plan_build_at_block(stage, block, layout, &plan);
+         assert(built == 0);
+         if (built == 0 && cross_tie(plan.words, plan.dword_count))
+            streams++;
       }
    }
 
    struct r300_zmask_clear_plan fast;
-   assert(r300_zmask_fast_clear_plan_build(
-             &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four,
-             0x800000u, 0u, &fast) == 0);
-   cross_tie(fast.words, fast.dword_count);
-   streams++;
+   const int fast_built = r300_zmask_fast_clear_plan_build(
+      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four, 0x800000u,
+      0u, &fast);
+   assert(fast_built == 0);
+   if (fast_built == 0 && cross_tie(fast.words, fast.dword_count))
+      streams++;
    return streams;
 }
 
@@ -210,22 +221,32 @@ check_clear_plans(void)
 static uint32_t
 check_materialize_plans(void)
 {
-   const struct r300_zmask_layout four = reference_layout(R300_ZCOMP_4X4);
+   struct r300_zmask_layout four;
+   if (!reference_layout(R300_ZCOMP_4X4, &four))
+      return 0u;
    struct r300_zmask_materialize_plan prefix;
-   assert(r300_zmask_materialize_prefix(
-             &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four,
-             0x800000u, 0u, &prefix) == 0);
-   cross_tie(prefix.words, prefix.dword_count);
+   const int prefix_built = r300_zmask_materialize_prefix(
+      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four, 0x800000u,
+      0u, &prefix);
+   assert(prefix_built == 0);
+   if (prefix_built != 0)
+      return 0u;
+   uint32_t streams = cross_tie(prefix.words, prefix.dword_count) ? 1u : 0u;
 
    struct r300_zmask_materialize_plan whole;
-   assert(r300_zmask_fast_clear_read_plan(
-             &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four,
-             0x800000u, 0u, &whole) == 0);
-   cross_tie(whole.words, whole.dword_count);
+   const int whole_built = r300_zmask_fast_clear_read_plan(
+      &r300_zb_depth_surface_rs485m_z24_macrotiled_logical, &four, 0x800000u,
+      0u, &whole);
+   assert(whole_built == 0);
+   if (whole_built != 0)
+      return streams;
+   streams += cross_tie(whole.words, whole.dword_count) ? 1u : 0u;
    /* The suffix on its own, which the whole plan appends. */
-   cross_tie(r300_zmask_materialize_end_words(&whole),
-             r300_zmask_materialize_end_dword_count(&whole));
-   return 3u;
+   streams += cross_tie(r300_zmask_materialize_end_words(&whole),
+                        r300_zmask_materialize_end_dword_count(&whole))
+                 ? 1u
+                 : 0u;
+   return streams;
 }
 
 /* The stream the RS485M refused, reassembled: the stage C append with
@@ -235,14 +256,19 @@ check_materialize_plans(void)
  * model rejects it at the same word, so the fix is what moved both
  * verdicts rather than the plan changing shape underneath them.
  */
-static void
+static bool
 check_prefix_plan_known_bad(void)
 {
-   const struct r300_zmask_layout four = reference_layout(R300_ZCOMP_4X4);
+   struct r300_zmask_layout four;
+   if (!reference_layout(R300_ZCOMP_4X4, &four))
+      return false;
    struct r300_zmask_clear_plan plan;
-   assert(r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
-                                      &four, &plan) == 0);
+   if (r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR, &four,
+                                   &plan) != 0)
+      return false;
    assert(plan.dword_count == 11u);
+   if (plan.dword_count != 11u)
+      return false;
 
    uint32_t stream[16];
    uint32_t n = 0u;
@@ -258,29 +284,35 @@ check_prefix_plan_known_bad(void)
    assert(n == 15u);
 
    struct crosscheck_site site;
-   assert(crosscheck_stream(stream, n, &site) ==
-          CROSSCHECK_FORBIDDEN_REGISTER);
+   const enum crosscheck_verdict kernel = crosscheck_stream(stream, n, &site);
+   assert(kernel == CROSSCHECK_FORBIDDEN_REGISTER);
    assert(site.reg_or_opcode == R300_ZB_ZMASK_WRINDEX && site.ib_index == 4u);
 
    struct r300_zb_hyperz_site model_site;
-   assert(r300_zb_hyperz_admit_stream(stream, n, R300_ZB_HYPERZ_OWNED,
-                                      &model_site) ==
-          R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER);
+   const enum r300_zb_hyperz_verdict model = r300_zb_hyperz_admit_stream(
+      stream, n, R300_ZB_HYPERZ_OWNED, &model_site);
+   assert(model == R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER);
    assert(model_site.reg_or_opcode == R300_ZB_ZMASK_WRINDEX &&
           model_site.ib_index == 4u && model_site.value == 0u);
 
    /* The same stream without the splice is the plan that ships, and both
     * readings admit it. */
-   cross_tie(plan.words, plan.dword_count);
+   return kernel == CROSSCHECK_FORBIDDEN_REGISTER &&
+          site.reg_or_opcode == R300_ZB_ZMASK_WRINDEX &&
+          site.ib_index == 4u &&
+          model == R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER &&
+          model_site.value == 0u &&
+          cross_tie(plan.words, plan.dword_count);
 }
 
 /* The two index registers on their own, at the value and the ownership
  * the refusal was measured with: each fails the kernel data on the
  * forbidden-register mechanism and the admission model on its own row.
  */
-static void
+static uint32_t
 check_known_bad(void)
 {
+   uint32_t confirmed = 0u;
    const uint32_t keys[2] = { R300_ZB_ZMASK_WRINDEX, R300_ZB_ZMASK_RDINDEX };
    for (uint32_t k = 0; k < 2u; k++) {
       /* CP_PACKET0 carries the payload run as count - 1, so each of
@@ -290,18 +322,26 @@ check_known_bad(void)
          CP_PACKET0(keys[k], 0), 0u,
       };
       struct crosscheck_site site;
-      assert(crosscheck_stream(stream, 4u, &site) ==
-             CROSSCHECK_FORBIDDEN_REGISTER);
+      const enum crosscheck_verdict kernel =
+         crosscheck_stream(stream, 4u, &site);
+      assert(kernel == CROSSCHECK_FORBIDDEN_REGISTER);
       assert(site.reg_or_opcode == keys[k] && site.ib_index == 3u);
       assert(!r300_kernel_admits_packet0_register(keys[k]));
-      assert(!r300_kernel_register_safe_listed(keys[k]));
-      assert(!r300_kernel_register_checked(keys[k]));
 
       struct r300_zb_hyperz_site model_site;
-      assert(r300_zb_hyperz_admit_stream(stream, 4u, R300_ZB_HYPERZ_OWNED,
-                                         &model_site) ==
-             R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER);
+      const enum r300_zb_hyperz_verdict model = r300_zb_hyperz_admit_stream(
+         stream, 4u, R300_ZB_HYPERZ_OWNED, &model_site);
+      assert(model == R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER);
       assert(model_site.reg_or_opcode == keys[k] && model_site.value == 0u);
+
+      if (kernel == CROSSCHECK_FORBIDDEN_REGISTER &&
+          site.reg_or_opcode == keys[k] && site.ib_index == 3u &&
+          !r300_kernel_admits_packet0_register(keys[k]) &&
+          !r300_kernel_register_safe_listed(keys[k]) &&
+          !r300_kernel_register_checked(keys[k]) &&
+          model == R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER &&
+          model_site.reg_or_opcode == keys[k] && model_site.value == 0u)
+         confirmed++;
    }
 
    /* A register above the bitmap's extent, which the parser rejects
@@ -310,19 +350,27 @@ check_known_bad(void)
       CP_PACKET0(R300_KERNEL_PACKET0_REGISTER_LIMIT, 0), 0u,
    };
    struct crosscheck_site site;
-   assert(crosscheck_stream(out_of_range, 2u, &site) ==
-          CROSSCHECK_REGISTER_RANGE);
+   const enum crosscheck_verdict range =
+      crosscheck_stream(out_of_range, 2u, &site);
+   assert(range == CROSSCHECK_REGISTER_RANGE);
    struct r300_zb_hyperz_site model_site;
-   assert(r300_zb_hyperz_admit_stream(out_of_range, 2u, R300_ZB_HYPERZ_OWNED,
-                                      &model_site) ==
-          R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE);
+   const enum r300_zb_hyperz_verdict range_model =
+      r300_zb_hyperz_admit_stream(out_of_range, 2u, R300_ZB_HYPERZ_OWNED,
+                                  &model_site);
+   assert(range_model == R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE);
+   if (range == CROSSCHECK_REGISTER_RANGE &&
+       range_model == R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE)
+      confirmed++;
 
    /* An opcode no ZMASK stream may carry. */
    const uint32_t bad_opcode[2] = {
       CP_PACKET3(R300_PACKET3_3D_CLEAR_HIZ, 0), 0u,
    };
-   assert(crosscheck_stream(bad_opcode, 2u, &site) ==
-          CROSSCHECK_UNKNOWN_OPCODE);
+   const enum crosscheck_verdict opcode =
+      crosscheck_stream(bad_opcode, 2u, &site);
+   assert(opcode == CROSSCHECK_UNKNOWN_OPCODE);
+   if (opcode == CROSSCHECK_UNKNOWN_OPCODE)
+      confirmed++;
 
    /* The checker admits the stream these known-bads differ from, so the
     * verdicts above rest on the register and the opcode alone. */
@@ -330,32 +378,49 @@ check_known_bad(void)
       CP_PACKET0(R300_ZB_ZMASK_OFFSET, 0), 0u,
       CP_PACKET0(R300_ZB_DEPTHCLEARVALUE, 0), 0u,
    };
-   assert(crosscheck_stream(good, 4u, &site) == CROSSCHECK_ADMIT);
+   const enum crosscheck_verdict admit = crosscheck_stream(good, 4u, &site);
+   assert(admit == CROSSCHECK_ADMIT);
+   if (admit == CROSSCHECK_ADMIT)
+      confirmed++;
+   return confirmed;
 }
 
 /* The two kernel lists, and the disjointness that states the bitmap's
  * polarity: a listed register carries a clear bit and skips the check,
  * so it can never also be a case label. */
-static void
+static bool
 check_authority_tables(void)
 {
-   assert(r300_kernel_packet0_authority_self_check() == 0);
+   const int self_check = r300_kernel_packet0_authority_self_check();
+   assert(self_check == 0);
+   if (self_check != 0)
+      return false;
    uint32_t safe_count = 0u, checked_count = 0u;
    const struct r300_kernel_register *safe =
       r300_kernel_safe_registers(&safe_count);
    const struct r300_kernel_register *checked =
       r300_kernel_checked_registers(&checked_count);
    assert(safe_count == 685u && checked_count == 142u);
+
+   /* Every row of both tables, counted so the walk reaches the verdict:
+    * a safe-listed register admits and carries no case label, and a case
+    * label is absent from the safe list and admits exactly when it lies
+    * inside the bitmap extent -- the shared check carries r500 labels the
+    * r300 bitmap cannot reach. */
+   uint32_t safe_held = 0u, checked_held = 0u;
    for (uint32_t i = 0; i < safe_count; i++) {
-      assert(r300_kernel_admits_packet0_register(safe[i].offset));
-      assert(!r300_kernel_register_checked(safe[i].offset));
+      const bool held = r300_kernel_admits_packet0_register(safe[i].offset) &&
+                        !r300_kernel_register_checked(safe[i].offset);
+      assert(held);
+      safe_held += held ? 1u : 0u;
    }
    for (uint32_t i = 0; i < checked_count; i++) {
-      assert(!r300_kernel_register_safe_listed(checked[i].offset));
-      /* A case label above the extent is unreachable on this part: the
-       * shared check carries r500 labels the r300 bitmap cannot reach. */
-      assert(r300_kernel_admits_packet0_register(checked[i].offset) ==
-             (checked[i].offset < R300_KERNEL_PACKET0_REGISTER_LIMIT));
+      const bool held =
+         !r300_kernel_register_safe_listed(checked[i].offset) &&
+         r300_kernel_admits_packet0_register(checked[i].offset) ==
+            (checked[i].offset < R300_KERNEL_PACKET0_REGISTER_LIMIT);
+      assert(held);
+      checked_held += held ? 1u : 0u;
    }
 
    /* The registers the ZMASK path depends on, by the mechanism that
@@ -378,20 +443,61 @@ check_authority_tables(void)
    assert(r300_kernel_register_checked(R300_GB_Z_PEQ_CONFIG));
    assert(!r300_kernel_admits_packet0_register(R300_ZB_ZMASK_WRINDEX));
    assert(!r300_kernel_admits_packet0_register(R300_ZB_ZMASK_RDINDEX));
+
+   return safe_count == 685u && checked_count == 142u &&
+          safe_held == safe_count && checked_held == checked_count &&
+          r300_kernel_register_safe_listed(R300_ZB_DEPTHCLEARVALUE) &&
+          r300_kernel_register_safe_listed(R300_ZB_ZCACHE_CTLSTAT) &&
+          r300_kernel_register_checked(R300_ZB_ZMASK_OFFSET) &&
+          r300_kernel_register_checked(R300_ZB_ZMASK_PITCH) &&
+          r300_kernel_register_checked(R300_ZB_BW_CNTL) &&
+          r300_kernel_register_checked(R300_GB_Z_PEQ_CONFIG) &&
+          !r300_kernel_admits_packet0_register(R300_ZB_ZMASK_WRINDEX) &&
+          !r300_kernel_admits_packet0_register(R300_ZB_ZMASK_RDINDEX);
 }
+
+/* The shape the run must produce.  Eight clear streams: six stages with
+ * the compressed-write stage built at both blocks it admits, plus the
+ * fast-clear value plan.  Three materialize streams: the prefix, the
+ * whole read plan, and the suffix.  Five known-bads: the two index
+ * registers, the out-of-range write, the unauthorized opcode, and the
+ * control stream that differs from them only in the register it names.
+ * A check a reading refuses goes uncounted, so a mismatch fails through
+ * the return value.
+ */
+#define EXPECTED_CLEAR_STREAMS 8u
+#define EXPECTED_MATERIALIZE_STREAMS 3u
+#define EXPECTED_KNOWN_BAD_CONFIRMATIONS 5u
 
 int
 main(void)
 {
-   check_authority_tables();
-   assert(r300_zb_hyperz_rows_self_check() == 0);
-   assert(r300_zmask_clear_stages_self_check() == 0);
+   const bool authority = check_authority_tables();
+   const int hyperz_rows = r300_zb_hyperz_rows_self_check();
+   const int clear_stages = r300_zmask_clear_stages_self_check();
+   assert(hyperz_rows == 0);
+   assert(clear_stages == 0);
    const uint32_t clear_streams = check_clear_plans();
    const uint32_t materialize_streams = check_materialize_plans();
-   check_known_bad();
-   check_prefix_plan_known_bad();
+   const uint32_t known_bad = check_known_bad();
+   const bool prefix_plan = check_prefix_plan_known_bad();
+
+   if (!authority || hyperz_rows != 0 || clear_stages != 0 || !prefix_plan ||
+       clear_streams != EXPECTED_CLEAR_STREAMS ||
+       materialize_streams != EXPECTED_MATERIALIZE_STREAMS ||
+       known_bad != EXPECTED_KNOWN_BAD_CONFIRMATIONS) {
+      printf("r300 zmask kernel register cross-check: authority %d, rows %d, "
+             "stages %d, prefix plan %d, clear %u of %u, materialize %u of "
+             "%u, known-bad %u of %u\n",
+             (int)authority, hyperz_rows, clear_stages, (int)prefix_plan,
+             clear_streams, EXPECTED_CLEAR_STREAMS, materialize_streams,
+             EXPECTED_MATERIALIZE_STREAMS, known_bad,
+             EXPECTED_KNOWN_BAD_CONFIRMATIONS);
+      return 1;
+   }
    printf("r300 zmask kernel register cross-check: %u clear streams, %u "
-          "materialize streams against %u safe and %u checked registers\n",
-          clear_streams, materialize_streams, 685u, 142u);
+          "materialize streams, %u known-bads against %u safe and %u "
+          "checked registers\n",
+          clear_streams, materialize_streams, known_bad, 685u, 142u);
    return 0;
 }
