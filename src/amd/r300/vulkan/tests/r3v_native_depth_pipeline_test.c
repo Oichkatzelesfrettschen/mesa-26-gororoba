@@ -940,6 +940,22 @@ main(void)
    assert(r3v_native_zmask_owner_from_image(
              &switching_owner_image, &compressed_metadata,
              &materialize_device.zmask_owner) == VK_SUCCESS);
+   struct r3v_native_cmd_buffer compressed_materialize_command = {0};
+   compressed_materialize_command.vk.base.type =
+      VK_OBJECT_TYPE_COMMAND_BUFFER;
+   compressed_materialize_command.vk.base.device = &materialize_device.vk;
+   compressed_materialize_command.vk.pool = &pool;
+   assert(r3v_native_record_zmask_materialize(
+             r3v_native_cmd_buffer_to_handle(&compressed_materialize_command),
+             r3v_native_image_to_handle(&switching_owner_image),
+             R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
+             &compressed_metadata) == VK_ERROR_FEATURE_NOT_PRESENT);
+   assert(compressed_materialize_command.ib_size_dwords == 0u);
+   assert(compressed_materialize_command.reference_count == 0u);
+   assert(compressed_materialize_command.ordered_operation_count == 0u);
+   assert(compressed_materialize_command.image_state_count == 0u);
+   assert(!compressed_materialize_command.required_zmask_owner_set);
+   assert(!compressed_materialize_command.current_zmask_owner_set);
    struct r3v_native_cmd_buffer compressed_owner_initialize = {0};
    compressed_owner_initialize.vk.base.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
    compressed_owner_initialize.vk.base.device = &materialize_device.vk;

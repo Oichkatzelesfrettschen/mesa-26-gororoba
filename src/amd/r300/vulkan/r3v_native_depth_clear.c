@@ -423,11 +423,13 @@ r3v_native_record_zmask_materialize(VkCommandBuffer command_buffer,
                          : image->committed_submission.zmask_metadata;
    if (source_metadata == NULL || representation != source_representation ||
        !r3v_native_zmask_metadata_equal(&metadata, source_metadata) ||
-       (representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
-        representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED) ||
-       (metadata.status != R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR &&
-        metadata.status != R3V_NATIVE_ZMASK_METADATA_COMPRESSED) ||
        metadata.generation == 0u)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED &&
+       metadata.status == R3V_NATIVE_ZMASK_METADATA_COMPRESSED)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   if (representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR ||
+       metadata.status != R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR)
       return VK_ERROR_INITIALIZATION_FAILED;
 
    struct r300_zmask_materialize_plan plan;
