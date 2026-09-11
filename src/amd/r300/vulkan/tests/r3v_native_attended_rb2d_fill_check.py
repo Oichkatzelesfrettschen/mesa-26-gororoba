@@ -20,7 +20,7 @@ import sys
 import tempfile
 
 CELL = {"fill_offset": "12", "fill_bytes": "4992", "fill_value": "0x11223344",
-        "memory_type_index": "0", "wait_bound_ns": "30000000000"}
+        "memory_type_index": "1", "wait_bound_ns": "30000000000"}
 
 
 def fail(message):
@@ -144,6 +144,11 @@ def main():
         bad = dict(declaration)
         bad["memory_type_index"] = "x"
         run("malformed memory_type_index", bad, expect_marker="malformed")
+        for memory_type_index in ("0", "2", "4294967296"):
+            bad = dict(declaration)
+            bad["memory_type_index"] = memory_type_index
+            run(f"wrong memory_type_index {memory_type_index}", bad,
+                expect_marker="memory_type_index differs from")
 
         # Each environment gate absent or wrong alone.
         for key in ("R3V_NATIVE_SUBMIT_HAZARD_ACCEPTED",

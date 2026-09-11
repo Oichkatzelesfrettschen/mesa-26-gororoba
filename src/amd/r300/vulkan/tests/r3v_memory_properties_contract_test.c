@@ -37,52 +37,32 @@ check_native_heap_size(void)
  * precede its superset. Equal and incomparable flag sets retain either
  * order when the memory types use the same heap.
  */
-static bool
-memory_types_follow_subset_order(const VkPhysicalDeviceMemoryProperties *table)
-{
-   for (uint32_t earlier = 0; earlier < table->memoryTypeCount; earlier++) {
-      const VkMemoryPropertyFlags earlier_flags =
-         table->memoryTypes[earlier].propertyFlags;
-      for (uint32_t later = earlier + 1; later < table->memoryTypeCount;
-           later++) {
-         const VkMemoryPropertyFlags later_flags =
-            table->memoryTypes[later].propertyFlags;
-         if (earlier_flags != later_flags &&
-             (earlier_flags & later_flags) == later_flags)
-            return false;
-      }
-   }
-   return true;
-}
-
-static bool
+static void
 check_native_type_order(void)
 {
-   VkPhysicalDeviceMemoryProperties control = {0};
+   const uint64_t capacity_bytes = 1ULL << 30;
+   VkPhysicalDeviceMemoryProperties control = native_table(capacity_bytes);
    control.memoryTypeCount = 3;
    control.memoryTypes[0].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
    control.memoryTypes[1].propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
    control.memoryTypes[2].propertyFlags =
       control.memoryTypes[0].propertyFlags | control.memoryTypes[1].propertyFlags;
-   assert(memory_types_follow_subset_order(&control));
+   assert(r3v_memory_properties_check(&control, capacity_bytes) ==
+          R3V_MEMORY_PROPERTIES_OK);
 
    VkMemoryType temporary = control.memoryTypes[0];
    control.memoryTypes[0] = control.memoryTypes[1];
    control.memoryTypes[1] = temporary;
-   assert(memory_types_follow_subset_order(&control));
+   assert(r3v_memory_properties_check(&control, capacity_bytes) ==
+          R3V_MEMORY_PROPERTIES_OK);
 
    control.memoryTypes[0] = control.memoryTypes[2];
-   assert(!memory_types_follow_subset_order(&control));
+   assert(r3v_memory_properties_check(&control, capacity_bytes) ==
+          R3V_MEMORY_PROPERTIES_TYPE_SUBSET_ORDER);
    control.memoryTypes[1] = control.memoryTypes[2];
-   assert(memory_types_follow_subset_order(&control));
-
-   const VkPhysicalDeviceMemoryProperties native = native_table(1ULL << 30);
-   if (!memory_types_follow_subset_order(&native)) {
-      fprintf(stderr, "native memory types violate strict-subset ordering\n");
-      return false;
-   }
-   return true;
+   assert(r3v_memory_properties_check(&control, capacity_bytes) ==
+          R3V_MEMORY_PROPERTIES_OK);
 }
 
 /* The device-only type reaches shared VRAM through NO_CPU_ACCESS
@@ -188,8 +168,7 @@ main(void)
    check_native_heap_size();
    check_native_types();
    check_known_bad();
-   if (!check_native_type_order())
-      return 1;
+   check_native_type_order();
    printf("r3v memory-property contract: OK\n");
    return 0;
 }
