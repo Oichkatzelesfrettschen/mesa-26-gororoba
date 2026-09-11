@@ -1,0 +1,407 @@
+{
+  "schema_version": 1,
+  "artifact": "R3V Vulkan 1.0 core API registry sheet",
+  "source": {
+    "publisher": "Khronos Group",
+    "repository": "https://github.com/KhronosGroup/Vulkan-Docs",
+    "tag": "v1.0.69-core",
+    "commit": "ab08f0951ef1ad9b84db93f971e113c1d9d55609",
+    "tag_object": "ff4049b28854a0a7472623f3c037dee800fb4c58",
+    "tagger_date": "2018-02-19T23:33:22Z",
+    "xml_path": "src/spec/vk.xml",
+    "xml_url": "https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/ab08f0951ef1ad9b84db93f971e113c1d9d55609/src/spec/vk.xml",
+    "xml_sha256": "820d7e3f6fb54d955b0bbd89a0c96be3e66f9a7cc60a7eb28d820ad57c6c2b4e",
+    "registry_landing_page": "https://registry.khronos.org/vulkan/specs/1.0/README.md"
+  },
+  "projection": {
+    "feature": "VK_VERSION_1_0",
+    "api": "vulkan",
+    "version": "1.0",
+    "requirement_blocks": [
+      {
+        "name": "Header boilerplate",
+        "commands": [],
+        "types": [
+          "vk_platform"
+        ],
+        "enums": []
+      },
+      {
+        "name": "API version",
+        "commands": [],
+        "types": [
+          "VK_API_VERSION",
+          "VK_API_VERSION_1_0",
+          "VK_VERSION_MAJOR",
+          "VK_VERSION_MINOR",
+          "VK_VERSION_PATCH",
+          "VK_HEADER_VERSION"
+        ],
+        "enums": []
+      },
+      {
+        "name": "API constants",
+        "commands": [],
+        "types": [
+          "VK_NULL_HANDLE",
+          "VkPipelineCacheHeaderVersion"
+        ],
+        "enums": [
+          "VK_LOD_CLAMP_NONE",
+          "VK_REMAINING_MIP_LEVELS",
+          "VK_REMAINING_ARRAY_LAYERS",
+          "VK_WHOLE_SIZE",
+          "VK_ATTACHMENT_UNUSED",
+          "VK_TRUE",
+          "VK_FALSE",
+          "VK_QUEUE_FAMILY_IGNORED",
+          "VK_SUBPASS_EXTERNAL"
+        ]
+      },
+      {
+        "name": "Device initialization",
+        "commands": [
+          "vkCreateInstance",
+          "vkDestroyInstance",
+          "vkEnumeratePhysicalDevices",
+          "vkGetPhysicalDeviceFeatures",
+          "vkGetPhysicalDeviceFormatProperties",
+          "vkGetPhysicalDeviceImageFormatProperties",
+          "vkGetPhysicalDeviceProperties",
+          "vkGetPhysicalDeviceQueueFamilyProperties",
+          "vkGetPhysicalDeviceMemoryProperties",
+          "vkGetInstanceProcAddr",
+          "vkGetDeviceProcAddr"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Device commands",
+        "commands": [
+          "vkCreateDevice",
+          "vkDestroyDevice"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Extension discovery commands",
+        "commands": [
+          "vkEnumerateInstanceExtensionProperties",
+          "vkEnumerateDeviceExtensionProperties"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Layer discovery commands",
+        "commands": [
+          "vkEnumerateInstanceLayerProperties",
+          "vkEnumerateDeviceLayerProperties"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "queue commands",
+        "commands": [
+          "vkGetDeviceQueue",
+          "vkQueueSubmit",
+          "vkQueueWaitIdle",
+          "vkDeviceWaitIdle"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Memory commands",
+        "commands": [
+          "vkAllocateMemory",
+          "vkFreeMemory",
+          "vkMapMemory",
+          "vkUnmapMemory",
+          "vkFlushMappedMemoryRanges",
+          "vkInvalidateMappedMemoryRanges",
+          "vkGetDeviceMemoryCommitment"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Memory management API commands",
+        "commands": [
+          "vkBindBufferMemory",
+          "vkBindImageMemory",
+          "vkGetBufferMemoryRequirements",
+          "vkGetImageMemoryRequirements"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Sparse resource memory management API commands",
+        "commands": [
+          "vkGetImageSparseMemoryRequirements",
+          "vkGetPhysicalDeviceSparseImageFormatProperties",
+          "vkQueueBindSparse"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Fence commands",
+        "commands": [
+          "vkCreateFence",
+          "vkDestroyFence",
+          "vkResetFences",
+          "vkGetFenceStatus",
+          "vkWaitForFences"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Queue semaphore commands",
+        "commands": [
+          "vkCreateSemaphore",
+          "vkDestroySemaphore"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Event commands",
+        "commands": [
+          "vkCreateEvent",
+          "vkDestroyEvent",
+          "vkGetEventStatus",
+          "vkSetEvent",
+          "vkResetEvent"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Query commands",
+        "commands": [
+          "vkCreateQueryPool",
+          "vkDestroyQueryPool",
+          "vkGetQueryPoolResults"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Buffer commands",
+        "commands": [
+          "vkCreateBuffer",
+          "vkDestroyBuffer"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Buffer view commands",
+        "commands": [
+          "vkCreateBufferView",
+          "vkDestroyBufferView"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Image commands",
+        "commands": [
+          "vkCreateImage",
+          "vkDestroyImage",
+          "vkGetImageSubresourceLayout"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Image view commands",
+        "commands": [
+          "vkCreateImageView",
+          "vkDestroyImageView"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Shader commands",
+        "commands": [
+          "vkCreateShaderModule",
+          "vkDestroyShaderModule"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Pipeline Cache commands",
+        "commands": [
+          "vkCreatePipelineCache",
+          "vkDestroyPipelineCache",
+          "vkGetPipelineCacheData",
+          "vkMergePipelineCaches"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Pipeline commands",
+        "commands": [
+          "vkCreateGraphicsPipelines",
+          "vkCreateComputePipelines",
+          "vkDestroyPipeline"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Pipeline layout commands",
+        "commands": [
+          "vkCreatePipelineLayout",
+          "vkDestroyPipelineLayout"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Sampler commands",
+        "commands": [
+          "vkCreateSampler",
+          "vkDestroySampler"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Descriptor set commands",
+        "commands": [
+          "vkCreateDescriptorSetLayout",
+          "vkDestroyDescriptorSetLayout",
+          "vkCreateDescriptorPool",
+          "vkDestroyDescriptorPool",
+          "vkResetDescriptorPool",
+          "vkAllocateDescriptorSets",
+          "vkFreeDescriptorSets",
+          "vkUpdateDescriptorSets"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Pass commands",
+        "commands": [
+          "vkCreateFramebuffer",
+          "vkDestroyFramebuffer",
+          "vkCreateRenderPass",
+          "vkDestroyRenderPass",
+          "vkGetRenderAreaGranularity"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Command pool commands",
+        "commands": [
+          "vkCreateCommandPool",
+          "vkDestroyCommandPool",
+          "vkResetCommandPool"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Command buffer commands",
+        "commands": [
+          "vkAllocateCommandBuffers",
+          "vkFreeCommandBuffers",
+          "vkBeginCommandBuffer",
+          "vkEndCommandBuffer",
+          "vkResetCommandBuffer"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Command buffer building commands",
+        "commands": [
+          "vkCmdBindPipeline",
+          "vkCmdSetViewport",
+          "vkCmdSetScissor",
+          "vkCmdSetLineWidth",
+          "vkCmdSetDepthBias",
+          "vkCmdSetBlendConstants",
+          "vkCmdSetDepthBounds",
+          "vkCmdSetStencilCompareMask",
+          "vkCmdSetStencilWriteMask",
+          "vkCmdSetStencilReference",
+          "vkCmdBindDescriptorSets",
+          "vkCmdBindIndexBuffer",
+          "vkCmdBindVertexBuffers",
+          "vkCmdDraw",
+          "vkCmdDrawIndexed",
+          "vkCmdDrawIndirect",
+          "vkCmdDrawIndexedIndirect",
+          "vkCmdDispatch",
+          "vkCmdDispatchIndirect",
+          "vkCmdCopyBuffer",
+          "vkCmdCopyImage",
+          "vkCmdBlitImage",
+          "vkCmdCopyBufferToImage",
+          "vkCmdCopyImageToBuffer",
+          "vkCmdUpdateBuffer",
+          "vkCmdFillBuffer",
+          "vkCmdClearColorImage",
+          "vkCmdClearDepthStencilImage",
+          "vkCmdClearAttachments",
+          "vkCmdResolveImage",
+          "vkCmdSetEvent",
+          "vkCmdResetEvent",
+          "vkCmdWaitEvents",
+          "vkCmdPipelineBarrier",
+          "vkCmdBeginQuery",
+          "vkCmdEndQuery",
+          "vkCmdResetQueryPool",
+          "vkCmdWriteTimestamp",
+          "vkCmdCopyQueryPoolResults",
+          "vkCmdPushConstants",
+          "vkCmdBeginRenderPass",
+          "vkCmdNextSubpass",
+          "vkCmdEndRenderPass",
+          "vkCmdExecuteCommands"
+        ],
+        "types": [],
+        "enums": []
+      },
+      {
+        "name": "Types not directly used by the API. Include e.g. structs that are not parameter types of commands, but still defined by the API.",
+        "commands": [],
+        "types": [
+          "VkBufferMemoryBarrier",
+          "VkDispatchIndirectCommand",
+          "VkDrawIndexedIndirectCommand",
+          "VkDrawIndirectCommand",
+          "VkImageMemoryBarrier",
+          "VkMemoryBarrier",
+          "VkObjectType"
+        ],
+        "enums": []
+      }
+    ],
+    "counts": {
+      "requirement_blocks": 30,
+      "commands": 137,
+      "types": 16,
+      "enums": 9
+    }
+  },
+  "interpretation_boundary": [
+    "The projection carries the direct API membership of VK_VERSION_1_0 from the official XML registry.",
+    "The projection does not reproduce normative prose, valid usage statements, synchronization semantics, format tables, or conformance tests.",
+    "The implementation tracker keeps source-audited behavior, executed conformance evidence, and silicon evidence distinct."
+  ]
+}

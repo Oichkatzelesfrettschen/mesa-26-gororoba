@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "artifact": "R3V Vulkan 1.0 core implementation tracker",
+  "sheet": "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
+  "reviewed_source": {
+    "mesa_commit": "8f6d3ff8fa3fd0c1651b6909c247bebbd1a30e07",
+    "driver_root": "src/amd/r300/vulkan"
+  },
+  "conformance_boundary": "Each status records a static source review. A bounded or refused row establishes neither Vulkan conformance nor RS485M execution. A conformance claim requires an executed CTS result with the source, ICD, and target identity retained.",
+  "statuses": {
+    "bounded": "The source exposes an explicitly bounded path. The row names the audit or focused test that can falsify the stated boundary.",
+    "refused": "The source withholds or fail closes the category outside a named executing subset. The row does not call the category implemented.",
+    "unassessed": "The registry category has an API definition but this review records no source-level implementation claim for it."
+  },
+  "rows": [
+    {
+      "id": "api-definition-and-version",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Header boilerplate",
+        "API version",
+        "API constants"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_instance.c",
+        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py"
+      ],
+      "falsifier": "Change the loader entry point or the reported API version without updating the entrypoint audit and the advertised-surface audit."
+    },
+    {
+      "id": "instance-physical-device-and-discovery",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Device initialization",
+        "Extension discovery commands",
+        "Layer discovery commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_instance.c",
+        "src/amd/r300/vulkan/r3v_physical_device.c",
+        "src/amd/r300/vulkan/tests/r3v_native_advertised_surface_audit.py"
+      ],
+      "falsifier": "Advertise an extension or feature whose driver route the advertised-surface audit cannot name."
+    },
+    {
+      "id": "device-queue-and-submission",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Device commands",
+        "queue commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_native_device.c",
+        "src/amd/r300/vulkan/r3v_native_queue.c",
+        "src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c"
+      ],
+      "falsifier": "Make a queue submission reach DRM without the exact arming and retention gate, or return success after an unrecorded command buffer."
+    },
+    {
+      "id": "memory-and-binding",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Memory commands",
+        "Memory management API commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_native_memory.c",
+        "src/amd/r300/vulkan/tests/r3v_native_memory_model_harness.c",
+        "src/amd/r300/vulkan/tests/r3v_memory_properties_contract_test.c"
+      ],
+      "falsifier": "Admit an allocation, map, flush, invalidate, or bind outside the one-BO and admitted-image contracts without extending the focused memory tests."
+    },
+    {
+      "id": "sparse-resource-memory",
+      "status": "refused",
+      "requirement_blocks": [
+        "Sparse resource memory management API commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py",
+        "src/amd/r300/vulkan/r3v_native_recording.c"
+      ],
+      "falsifier": "Expose sparse requirements or accept vkQueueBindSparse without a native sparse-memory route and a new tracker review."
+    },
+    {
+      "id": "synchronization-and-queries",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Fence commands",
+        "Queue semaphore commands",
+        "Event commands",
+        "Query commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_cpu_sync.c",
+        "src/amd/r300/vulkan/r3v_native_object.c",
+        "src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c"
+      ],
+      "falsifier": "Return success from a synchronization or query operation whose object state cannot reach completion or whose result has no defined producer."
+    },
+    {
+      "id": "resource-objects",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Buffer commands",
+        "Buffer view commands",
+        "Image commands",
+        "Image view commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_native_object.c",
+        "src/amd/r300/vulkan/r3v_native_image.c",
+        "src/amd/r300/vulkan/tests/r3v_native_transfer_ops_test.c"
+      ],
+      "falsifier": "Expand image or buffer admission beyond the executed family, or let a buffer-view request report success after the fail-closed entrypoint audit classifies it as unsupported."
+    },
+    {
+      "id": "shader-pipeline-and-descriptors",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Shader commands",
+        "Pipeline Cache commands",
+        "Pipeline commands",
+        "Pipeline layout commands",
+        "Sampler commands",
+        "Descriptor set commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_native_pipeline.c",
+        "src/amd/r300/vulkan/r3v_native_compute.c",
+        "src/amd/r300/vulkan/tests/r3v_native_pipeline_frontend_test.c",
+        "src/amd/r300/vulkan/tests/r3v_native_descriptor_test.c"
+      ],
+      "falsifier": "Admit a shader, descriptor, sampler, or pipeline shape that lacks a native lowering route and a focused positive and refusal test."
+    },
+    {
+      "id": "render-pass-and-command-lifetime",
+      "status": "bounded",
+      "requirement_blocks": [
+        "Pass commands",
+        "Command pool commands",
+        "Command buffer commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_native_draw.c",
+        "src/amd/r300/vulkan/r3v_native_recording.c",
+        "src/amd/r300/vulkan/tests/r3v_native_object_lifetime_test.c"
+      ],
+      "falsifier": "Permit a render-pass or command-buffer lifetime transition that leaves a public command buffer executable without a defined native state carrier."
+    },
+    {
+      "id": "recorded-command-surface",
+      "status": "refused",
+      "requirement_blocks": [
+        "Command buffer building commands"
+      ],
+      "evidence": [
+        "src/amd/r300/vulkan/r3v_native_recording.c",
+        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py",
+        "src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c"
+      ],
+      "falsifier": "Allow a core vkCmd entry point outside the qualified draw, transfer, clear, or experimental compute subsets to succeed without recording executable work."
+    },
+    {
+      "id": "auxiliary-core-types",
+      "status": "unassessed",
+      "requirement_blocks": [
+        "Types not directly used by the API. Include e.g. structs that are not parameter types of commands, but still defined by the API."
+      ],
+      "evidence": [
+        "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
+        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py"
+      ],
+      "falsifier": "Claim coverage for an auxiliary core type without a source path, a matching command contract, and a focused test."
+    }
+  ]
+}

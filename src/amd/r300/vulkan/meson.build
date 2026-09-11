@@ -599,6 +599,22 @@ if with_tests
             '--source-root', meson.project_source_root()],
     suite : ['r3v'],
   )
+  test(
+    'r3v-vulkan-1-0-core-tracker-audit-selftest',
+    prog_python,
+    args : [files('tests/r3v_vulkan_1_0_core_tracker_audit.py'), '--selftest'],
+    suite : ['r3v'],
+  )
+  test(
+    'r3v-vulkan-1-0-core-tracker-audit',
+    prog_python,
+    args : [files('tests/r3v_vulkan_1_0_core_tracker_audit.py'),
+            '--sheet', meson.project_source_root() /
+                       'docs/hardware/r3v-vulkan-1-0-core-sheet.json',
+            '--tracker', meson.project_source_root() /
+                         'docs/hardware/r3v-vulkan-1-0-core-implementation-tracker.json'],
+    suite : ['r3v'],
+  )
   # docs/hardware/r3v-wsi-denominator.md "Retained checks that pin the
   # denominator": the device extension table, the advertised-surface
   # binding ledger, and the built ICD's own symbol table must agree
