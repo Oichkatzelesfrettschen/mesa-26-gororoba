@@ -273,6 +273,15 @@ operation carries, `r3v_native_zmask_plan_obligations_init` derives them
 from the operation kind, aspect mask, logical region, and representation,
 and `r3v_native_zmask_plan_admit` returns the route.
 
+The automatic selection gate states the same boundary as one clause of its
+admission predicate. Its `supported-aspect-operations` clause reads the
+candidate's `aspect_operation_supported`, and `r3v_native_zmask_plan_admit`
+is what decides that fact for a recorded operation: a plan the admission
+routes to the ordinary path is an aspect operation the ZMASK
+representation does not answer. The two stay separate declarations because
+the gate decides over a frozen candidate with no driver state, while the
+admission reads the representation a command buffer resolved.
+
 | Operation | Aspects | Region | Route |
 | --- | --- | --- | --- |
 | clear | depth + stencil | whole surface | ZMASK fast clear |
@@ -315,3 +324,15 @@ each names what that demonstration would have to establish.
 - Compressed representations. `RD_COMP_ENABLE` and `WR_COMP_ENABLE` are off
   through stages C and D, so no compressed tile is ever produced and no
   resolve for one exists. The refusal is explicit rather than silent.
+||||||| 89fead4ca63
+
+## Automatic selection
+
+Standing selection of the fast clear over the ordinary combined clear is
+its own decision, declared in
+[r3v-zmask-automatic-selection-gate.md](r3v-zmask-automatic-selection-gate.md).
+That gate states the admission predicate over one candidate, the eight
+retained results the promotion consumes, and the reason genuine
+compression takes a separate verdict rather than riding the fast-clear
+promotion. Automatic selection stays disabled until every one of the eight
+results is retained.

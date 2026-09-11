@@ -13,6 +13,7 @@
 
 #include "r3v_entrypoints.h"
 #include "r3v_measurement_declaration.h"
+#include "r3v_native_zmask_admission.h"
 #include "r3v_physical_device.h"
 #include "r3v_private.h"
 #include "r3v_submit_preflight.h"
@@ -414,7 +415,23 @@ r3v_CreateDevice(VkPhysicalDevice physicalDevice,
    device->queue.vk.driver_submit = r3v_native_queue_submit;
 
    device->submit_hazard_accepted = r3v_native_submit_hazard_accepted();
-   device->zmask_automatic_qualified = false;
+   /* Automatic ZMASK selection is the conjunction of two halves: the
+    * candidate the qualification froze admits on the board this device
+    * resolved, and every one of the eight results that qualification
+    * predicts is retained.  r3v_native_zmask_promotion_retained answers
+    * NULL while any result stands outstanding, so the conjunction is
+    * false by construction and the enable is visible at the site the
+    * retained record opens.
+    */
+   struct r3v_native_zmask_automatic_candidate zmask_candidate;
+   r3v_native_zmask_qualification_candidate(
+      pdevice->platform_id, pdevice->pci_vendor_id, pdevice->pci_device_id,
+      &zmask_candidate);
+   device->zmask_automatic_qualified =
+      r3v_native_zmask_promotion_complete(
+         r3v_native_zmask_promotion_retained()) &&
+      r3v_native_zmask_automatic_admission(&zmask_candidate, NULL) ==
+         R3V_NATIVE_ZMASK_AUTOMATIC_ADMIT;
    if (!r3v_native_manifest_dir_copy(device)) {
       vk_queue_finish(&device->queue.vk);
       radeon_drm_vk_device_finish(&device->drm);
