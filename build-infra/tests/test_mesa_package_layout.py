@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
+import struct
 import subprocess
 from pathlib import Path
 
@@ -55,12 +57,28 @@ def configured_build(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def staged_payload(configured_build: Path) -> Path:
+def r3v_shared_object(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    output = tmp_path_factory.mktemp("r3v-elf") / "libvulkan_r3v.so"
+    subprocess.run(
+        ["cc", "-shared", "-x", "c", "-o", str(output), "-"],
+        input="int r3v_package_layout_fixture(void) { return 0; }\n",
+        text=True,
+        check=True,
+    )
+    return output
+
+
+@pytest.fixture
+def staged_payload(configured_build: Path, r3v_shared_object: Path) -> Path:
     stage = configured_build.parent / "package-root"
     for relative in layout.REQUIRED_ARTIFACTS:
         path = stage / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("fixture\n")
+    shutil.copyfile(r3v_shared_object, stage / "usr/lib/libvulkan_r3v.so")
+    license_path = stage / "usr/share/licenses/mesa-gororoba/license.rst"
+    license_path.parent.mkdir(parents=True)
+    license_path.write_text("fixture license\n")
     (stage / "usr/lib/pkgconfig/dri.pc").write_text(
         "prefix=/usr\ndridriverdir=/usr/lib/dri\n"
     )
@@ -80,6 +98,36 @@ def test_complete_stock_package(configured_build: Path, staged_payload: Path) ->
     assert not (
         staged_payload / "usr/share/mesa-gororoba/vulkan/icd.d/r3v_icd.x86_64.json"
     ).exists()
+    receipt = json.loads(
+        (staged_payload / "usr/share/mesa-gororoba/build-identity.json").read_text()
+    )
+    for relative in (
+        "usr/bin/mesa-gororoba-run",
+        "etc/mesa-gororoba/mesa-gororoba-env.sh",
+        "usr/lib/environment.d/90-mesa-gororoba-r300.conf",
+        "usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf",
+        "usr/share/licenses/mesa-gororoba/license.rst",
+    ):
+        assert relative in receipt["sha256"]
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "usr/bin/mesa-gororoba-run",
+        "etc/mesa-gororoba/mesa-gororoba-env.sh",
+        "usr/lib/environment.d/90-mesa-gororoba-r300.conf",
+        "usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf",
+        "usr/share/licenses/mesa-gororoba/license.rst",
+    ),
+)
+def test_packaging_policy_mutation_after_qualification(
+    configured_build: Path, staged_payload: Path, relative: str
+) -> None:
+    layout.publish_stage(configured_build, staged_payload)
+    (staged_payload / relative).write_text("changed after qualification\n")
+    with pytest.raises(ValueError, match="changed after qualification"):
+        layout.verify_stage(configured_build, staged_payload, None)
 
 
 @pytest.mark.parametrize(
@@ -134,6 +182,10 @@ def test_r3v_loader_artifact_rejects_private_directory(
     "document",
     (
         "{",
+        "[]",
+        "null",
+        '"manifest"',
+        "7",
         "{}",
         '{"ICD": []}',
         '{"ICD": {}}',
@@ -146,7 +198,7 @@ def test_r3v_loader_artifact_rejects_invalid_manifest(
 ) -> None:
     manifest = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.x86_64.json"
     manifest.write_text(document)
-    with pytest.raises(ValueError, match="manifest"):
+    with pytest.raises(layout.PackageLayoutError, match="manifest"):
         layout.publish_stage(configured_build, staged_payload)
 
 
@@ -156,6 +208,47 @@ def test_r3v_loader_artifact_rejects_duplicate_manifest(
     duplicate = staged_payload / "usr/share/vulkan/icd.d/r3v_icd.other.json"
     duplicate.write_text('{"ICD": {"library_path": "/usr/lib/libvulkan_r3v.so"}}\n')
     with pytest.raises(ValueError, match="one manifest"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_alternate_named_duplicate(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    duplicate = staged_payload / "usr/share/vulkan/icd.d/alternate.json"
+    duplicate.write_text('{"ICD": {"library_path": "/usr/lib/libvulkan_r3v.so"}}\n')
+    with pytest.raises(layout.PackageLayoutError, match="multiple loader manifests"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_non_elf_library(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    (staged_payload / "usr/lib/libvulkan_r3v.so").write_text("not an ELF object\n")
+    with pytest.raises(layout.PackageLayoutError, match="not an ELF object"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_non_shared_elf(
+    configured_build: Path, staged_payload: Path
+) -> None:
+    library = staged_payload / "usr/lib/libvulkan_r3v.so"
+    content = bytearray(library.read_bytes())
+    byte_order = "<" if content[5] == 1 else ">"
+    content[16:18] = struct.pack(f"{byte_order}H", 2)
+    library.write_bytes(content)
+    with pytest.raises(layout.PackageLayoutError, match="not a shared object"):
+        layout.publish_stage(configured_build, staged_payload)
+
+
+def test_r3v_loader_artifact_rejects_library_symlink_outside_usr_lib(
+    configured_build: Path, staged_payload: Path, r3v_shared_object: Path
+) -> None:
+    escaped_target = staged_payload / "usr/share/libvulkan_r3v.so"
+    shutil.copyfile(r3v_shared_object, escaped_target)
+    library = staged_payload / "usr/lib/libvulkan_r3v.so"
+    library.unlink()
+    library.symlink_to("../share/libvulkan_r3v.so")
+    with pytest.raises(layout.PackageLayoutError, match="escapes staged usr/lib"):
         layout.publish_stage(configured_build, staged_payload)
 
 

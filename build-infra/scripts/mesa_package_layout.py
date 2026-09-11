@@ -36,6 +36,10 @@ REQUIRED_OPTIONS = {
     "glvnd": "enabled",
 }
 REQUIRED_ARTIFACTS = (
+    "usr/bin/mesa-gororoba-run",
+    "etc/mesa-gororoba/mesa-gororoba-env.sh",
+    "usr/lib/environment.d/90-mesa-gororoba-r300.conf",
+    "usr/share/mesa-gororoba/xorg/20-rs482-modesetting-glamor.conf",
     "usr/lib/libgbm.so.1",
     "usr/lib/libGLX_mesa.so.0",
     "usr/lib/libEGL_mesa.so.0",
@@ -60,6 +64,10 @@ SYSTEM_PROFILES = {
     ),
     "2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache": ("debug", "false"),
 }
+
+
+class PackageLayoutError(ValueError):
+    """Report a controlled package-boundary refusal."""
 
 
 def read_options(builddir: Path) -> dict[str, object]:
@@ -298,40 +306,84 @@ def check_stage(stage: Path) -> None:
             check_elf(path, installed_path)
 
 
+def read_r3v_library_path(manifest: Path) -> str:
+    try:
+        document = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise PackageLayoutError("r3v package manifest is unreadable") from error
+    if not isinstance(document, dict):
+        raise PackageLayoutError("r3v package manifest must be an object")
+    icd = document.get("ICD")
+    if not isinstance(icd, dict):
+        raise PackageLayoutError("r3v package manifest lacks its ICD object")
+    library_path = icd.get("library_path")
+    if not isinstance(library_path, str) or not library_path:
+        raise PackageLayoutError("r3v package manifest lacks ICD.library_path")
+    return library_path
+
+
+def resolve_manifest_library(stage: Path, manifest: Path, library_path: str) -> Path:
+    if library_path.startswith("/"):
+        return (stage / library_path.lstrip("/")).resolve()
+    if "/" in library_path:
+        return (manifest.parent / library_path).resolve()
+    return (stage / "usr/lib" / library_path).resolve()
+
+
+def require_r3v_elf(stage: Path) -> Path:
+    library_root = (stage / "usr/lib").resolve(strict=True)
+    expected_library = (library_root / "libvulkan_r3v.so").resolve(strict=True)
+    if not expected_library.is_relative_to(library_root):
+        raise PackageLayoutError("r3v package driver library escapes staged usr/lib")
+    with expected_library.open("rb") as artifact:
+        if artifact.read(4) != b"\x7fELF":
+            raise PackageLayoutError("r3v package driver library is not an ELF object")
+    result = subprocess.run(
+        ["readelf", "--file-header", str(expected_library)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+    if (
+        result.stderr
+        or re.search(r"^\s*Type:\s+DYN\b", result.stdout, re.MULTILINE) is None
+    ):
+        raise PackageLayoutError("r3v package driver library is not a shared object")
+    return expected_library
+
+
 def check_r3v_manifest(stage: Path) -> None:
     manifest_directory = stage / "usr/share/vulkan/icd.d"
-    manifests = sorted(manifest_directory.glob("r3v_icd*.json"))
+    loader_manifests = sorted(manifest_directory.glob("*.json"))
+    manifests = [path for path in loader_manifests if path.name.startswith("r3v_icd")]
     private_manifests = list(
         (stage / "usr/share/mesa-gororoba/vulkan/icd.d").glob("r3v_icd*.json")
     )
     if len(manifests) != 1 or private_manifests:
-        raise ValueError(
+        raise PackageLayoutError(
             "r3v package requires one manifest in the standard loader directory"
         )
 
     manifest = manifests[0]
-    try:
-        document = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError("r3v package manifest is unreadable") from error
-    icd = document.get("ICD")
-    if not isinstance(icd, dict):
-        raise ValueError("r3v package manifest lacks its ICD object")
-    library_path = icd.get("library_path")
-    if not isinstance(library_path, str) or not library_path:
-        raise ValueError("r3v package manifest lacks ICD.library_path")
-
-    expected_library = (stage / "usr/lib/libvulkan_r3v.so").resolve(strict=True)
-    if library_path.startswith("/"):
-        resolved_library = (stage / library_path.lstrip("/")).resolve()
-    elif "/" in library_path:
-        resolved_library = (manifest.parent / library_path).resolve()
-    else:
-        resolved_library = (stage / "usr/lib" / library_path).resolve()
+    expected_library = require_r3v_elf(stage)
+    library_path = read_r3v_library_path(manifest)
+    resolved_library = resolve_manifest_library(stage, manifest, library_path)
     if resolved_library != expected_library:
-        raise ValueError(
+        raise PackageLayoutError(
             "r3v package manifest does not resolve to the packaged driver library"
         )
+    for candidate in loader_manifests:
+        if candidate == manifest:
+            continue
+        candidate_library_path = read_r3v_library_path(candidate)
+        if (
+            resolve_manifest_library(stage, candidate, candidate_library_path)
+            == expected_library
+        ):
+            raise PackageLayoutError(
+                "r3v package has multiple loader manifests for the packaged driver"
+            )
 
 
 def publish_stage(builddir: Path, stage: Path) -> None:
