@@ -255,6 +255,104 @@ enum r3v_native_image_representation {
    R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED,
 };
 
+/* Aspect obligations that decide whether a metadata-backed plan may stand in
+ * for the ordinary depth path.
+ *
+ * The Vulkan logical image carries a depth aspect and a stencil aspect that
+ * the RS485M D24S8 word packs together in one 32-bit location, and Vulkan 1.0,
+ * Resource Creation, Image Layouts stores an optimal-layout image in an
+ * implementation-dependent opaque layout whose layout is per-image
+ * subresource, so both aspects of one subresource share that representation.
+ * A ZMASK fast clear substitutes ZB_DEPTHCLEARVALUE for the whole packed word
+ * of every tile, which discards both aspects over the entire surface; it
+ * therefore stands in for the ordinary path only where the operation itself
+ * rewrites both aspects over the whole logical region.  Vulkan 1.0, Render
+ * Pass, Render Pass Store Operations states the two obligations that refuse
+ * the substitution everywhere else: a store updates values within the render
+ * area alone, and for a depth/stencil image a write to one aspect may result
+ * in a read-modify-write of the other.
+ *
+ *   operation                     obligation that decides the route
+ *   full clear, depth + stencil   writes both aspects, reads neither
+ *   depth-only clear              preserves the stencil aspect
+ *   stencil-only clear            preserves the depth aspect
+ *   partial clear                 preserves the region outside the rectangle
+ *   partial store                 reads the packed word it rewrites
+ *   aspect-only transfer          reads one aspect of the packed word
+ *
+ * requires_materialization stands apart from the route: it names a
+ * metadata-backed representation whose ordinary path resolves the metadata
+ * into depth memory first, and it holds for a fast-clear-admitted operation
+ * that the caller nonetheless records through the ordinary route. */
+struct r3v_native_zmask_plan_obligations {
+   bool reads_depth;
+   bool writes_depth;
+   bool reads_stencil;
+   bool writes_stencil;
+   bool requires_previous_contents;
+   bool preserves_untouched_aspect;
+   bool requires_materialization;
+};
+
+/* CLEAR writes a constant over the region; STORE reads and rewrites the
+ * packed word, which covers a ZB attachment access and a transfer into the
+ * image alike; TRANSFER_READ reads the named aspects out of it. */
+enum r3v_native_zmask_plan_operation {
+   R3V_NATIVE_ZMASK_PLAN_OPERATION_CLEAR = 0,
+   R3V_NATIVE_ZMASK_PLAN_OPERATION_STORE,
+   R3V_NATIVE_ZMASK_PLAN_OPERATION_TRANSFER_READ,
+};
+
+enum r3v_native_zmask_plan_route {
+   R3V_NATIVE_ZMASK_PLAN_ROUTE_ORDINARY = 0,
+   R3V_NATIVE_ZMASK_PLAN_ROUTE_FAST_CLEAR,
+};
+
+/* aspect_mask carries R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH and _STENCIL, the
+ * packed-word halves the Vulkan aspect bits map onto.  The region is logical
+ * and lies inside logical_width by logical_height.  A decision point that
+ * owns command-buffer state resolves representation and layout_admitted from
+ * that state before it builds the obligations. */
+struct r3v_native_zmask_plan_request {
+   enum r3v_native_zmask_plan_operation operation;
+   uint32_t aspect_mask;
+   uint32_t x;
+   uint32_t y;
+   uint32_t width;
+   uint32_t height;
+   uint32_t logical_width;
+   uint32_t logical_height;
+   enum r3v_native_image_representation representation;
+   bool layout_admitted;
+};
+
+/* Vulkan 1.0, Resource Creation, Image Views: VkImageSubresourceRange and
+ * VkImageSubresourceLayers name the aspects an operation addresses through
+ * VK_IMAGE_ASPECT_DEPTH_BIT and VK_IMAGE_ASPECT_STENCIL_BIT.  The plan
+ * request carries the two packed-word halves those bits map onto; an aspect
+ * outside the pair maps to zero, which the constructor refuses. */
+static inline uint32_t
+r3v_native_depth_plan_aspect_mask(VkImageAspectFlags aspects)
+{
+   uint32_t mask = 0u;
+   if ((aspects & VK_IMAGE_ASPECT_DEPTH_BIT) != 0u)
+      mask |= R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH;
+   if ((aspects & VK_IMAGE_ASPECT_STENCIL_BIT) != 0u)
+      mask |= R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL;
+   if ((aspects & ~(VkImageAspectFlags)(VK_IMAGE_ASPECT_DEPTH_BIT |
+                                        VK_IMAGE_ASPECT_STENCIL_BIT)) != 0u)
+      return 0u;
+   return mask;
+}
+
+bool r3v_native_zmask_plan_obligations_init(
+   const struct r3v_native_zmask_plan_request *request,
+   struct r3v_native_zmask_plan_obligations *obligations);
+
+enum r3v_native_zmask_plan_route r3v_native_zmask_plan_admit(
+   const struct r3v_native_zmask_plan_request *request,
+   const struct r3v_native_zmask_plan_obligations *obligations);
+
 enum r3v_native_zmask_fast_clear_authority {
    R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY = 0,
    R3V_NATIVE_ZMASK_FAST_CLEAR_AUTOMATIC,
@@ -265,7 +363,7 @@ struct r3v_native_zmask_fast_clear_facts {
    bool automatic_qualified;
    bool platform_qualified;
    bool image_contract_qualified;
-   bool combined_aspects;
+   bool plan_obligations_admitted;
    bool transfer_destination;
    bool binding_valid;
    bool layout_qualified;
@@ -2256,9 +2354,14 @@ VkResult r3v_native_cmd_buffer_require_image_layout(
    VkImageLayout layout, enum r3v_native_image_producer producer,
    bool writes_content);
 
+/* The request declares the operation shape; the command-buffer state
+ * supplies the representation the obligations are built against, and
+ * obligations_out reports the declaration the route was decided from. */
 VkResult r3v_native_cmd_buffer_require_ordinary_depth_backing(
    struct r3v_native_cmd_buffer *cmd_buffer,
-   struct r3v_native_image *image);
+   struct r3v_native_image *image,
+   const struct r3v_native_zmask_plan_request *request,
+   struct r3v_native_zmask_plan_obligations *obligations_out);
 
 VkResult r3v_native_cmd_buffer_prepare_zmask_fast_clear_read(
    struct r3v_native_cmd_buffer *cmd_buffer,

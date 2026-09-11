@@ -70,9 +70,19 @@ r3v_native_record_depth_image_clear(VkCommandBuffer command_buffer,
        cmd->deferred_dispatch.pending || cmd->pass_target != NULL)
       return VK_ERROR_INITIALIZATION_FAILED;
 
-   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(cmd, image) !=
-       VK_SUCCESS)
-      return VK_ERROR_INITIALIZATION_FAILED;
+   const struct r3v_native_zmask_plan_request plan_request = {
+      .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_CLEAR,
+      .aspect_mask = aspect_mask,
+      .width = image->depth_contract.logical_extent.width,
+      .height = image->depth_contract.logical_extent.height,
+      .logical_width = image->depth_contract.logical_extent.width,
+      .logical_height = image->depth_contract.logical_extent.height,
+   };
+   const VkResult backing_result =
+      r3v_native_cmd_buffer_require_ordinary_depth_backing(cmd, image,
+                                                           &plan_request, NULL);
+   if (backing_result != VK_SUCCESS)
+      return backing_result;
 
    if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd, 1u) !=
        VK_SUCCESS)
@@ -170,9 +180,21 @@ r3v_native_record_depth_image_clear_logical_rect(
        logical_width > surface->width || logical_height > surface->height)
       return VK_ERROR_INITIALIZATION_FAILED;
 
-   if (r3v_native_cmd_buffer_require_ordinary_depth_backing(cmd, image) !=
-       VK_SUCCESS)
-      return VK_ERROR_INITIALIZATION_FAILED;
+   const struct r3v_native_zmask_plan_request plan_request = {
+      .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_CLEAR,
+      .aspect_mask = aspect_mask,
+      .x = x,
+      .y = y,
+      .width = width,
+      .height = height,
+      .logical_width = logical_width,
+      .logical_height = logical_height,
+   };
+   const VkResult backing_result =
+      r3v_native_cmd_buffer_require_ordinary_depth_backing(cmd, image,
+                                                           &plan_request, NULL);
+   if (backing_result != VK_SUCCESS)
+      return backing_result;
 
    /* The complete admitted surface has a retained one-fill stream.  Keep
     * that stream unchanged and use the resolver plan only for subregions. */
@@ -893,6 +915,99 @@ r3v_native_zmask_fast_clear_source_valid(
    }
 }
 
+static bool
+r3v_native_zmask_representation_metadata_backed(
+   enum r3v_native_image_representation representation)
+{
+   return representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR ||
+          representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED;
+}
+
+bool
+r3v_native_zmask_plan_obligations_init(
+   const struct r3v_native_zmask_plan_request *request,
+   struct r3v_native_zmask_plan_obligations *obligations)
+{
+   if (request == NULL || obligations == NULL)
+      return false;
+   if (request->aspect_mask == 0u ||
+       (request->aspect_mask & ~R300_ZB_COMBINED_CLEAR_ASPECTS) != 0u)
+      return false;
+   if (request->logical_width == 0u || request->logical_height == 0u ||
+       request->width == 0u || request->height == 0u ||
+       request->x >= request->logical_width ||
+       request->y >= request->logical_height ||
+       request->width > request->logical_width - request->x ||
+       request->height > request->logical_height - request->y)
+      return false;
+
+   const bool depth =
+      (request->aspect_mask & R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH) != 0u;
+   const bool stencil =
+      (request->aspect_mask & R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL) != 0u;
+   const bool covers_surface =
+      request->x == 0u && request->y == 0u &&
+      request->width == request->logical_width &&
+      request->height == request->logical_height;
+
+   struct r3v_native_zmask_plan_obligations derived = {0};
+   switch (request->operation) {
+   case R3V_NATIVE_ZMASK_PLAN_OPERATION_CLEAR:
+      derived.writes_depth = depth;
+      derived.writes_stencil = stencil;
+      break;
+   case R3V_NATIVE_ZMASK_PLAN_OPERATION_STORE:
+      /* Vulkan 1.0, Render Pass, Render Pass Store Operations: a write to
+       * one aspect of a depth/stencil image may result in a read-modify-
+       * write of the other, which the packed D24S8 word makes unconditional
+       * here. */
+      derived.reads_depth = depth;
+      derived.writes_depth = depth;
+      derived.reads_stencil = stencil;
+      derived.writes_stencil = stencil;
+      break;
+   case R3V_NATIVE_ZMASK_PLAN_OPERATION_TRANSFER_READ:
+      derived.reads_depth = depth;
+      derived.reads_stencil = stencil;
+      break;
+   default:
+      return false;
+   }
+
+   derived.preserves_untouched_aspect =
+      !(derived.writes_depth && derived.writes_stencil);
+   derived.requires_previous_contents =
+      derived.reads_depth || derived.reads_stencil ||
+      derived.preserves_untouched_aspect || !covers_surface;
+   derived.requires_materialization =
+      r3v_native_zmask_representation_metadata_backed(request->representation);
+   *obligations = derived;
+   return true;
+}
+
+enum r3v_native_zmask_plan_route
+r3v_native_zmask_plan_admit(
+   const struct r3v_native_zmask_plan_request *request,
+   const struct r3v_native_zmask_plan_obligations *obligations)
+{
+   if (request == NULL || obligations == NULL)
+      return R3V_NATIVE_ZMASK_PLAN_ROUTE_ORDINARY;
+   /* The substitution discards the whole packed word of every tile, so it
+    * is admitted for a constant write that owes nothing to what the surface
+    * held.  A linear representation carries no ZMASK level. */
+   if (request->operation != R3V_NATIVE_ZMASK_PLAN_OPERATION_CLEAR ||
+       !request->layout_admitted ||
+       request->representation ==
+          R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_LINEAR)
+      return R3V_NATIVE_ZMASK_PLAN_ROUTE_ORDINARY;
+   if (!obligations->writes_depth || !obligations->writes_stencil ||
+       obligations->reads_depth || obligations->reads_stencil ||
+       obligations->preserves_untouched_aspect ||
+       obligations->requires_previous_contents)
+      return R3V_NATIVE_ZMASK_PLAN_ROUTE_ORDINARY;
+   return R3V_NATIVE_ZMASK_PLAN_ROUTE_FAST_CLEAR;
+}
+
 enum r3v_native_zmask_fast_clear_authority
 r3v_native_zmask_fast_clear_select_facts(
    const struct r3v_native_zmask_fast_clear_facts *facts)
@@ -901,7 +1016,8 @@ r3v_native_zmask_fast_clear_select_facts(
       return R3V_NATIVE_ZMASK_FAST_CLEAR_ORDINARY;
    const bool common = facts->platform_qualified &&
                        facts->image_contract_qualified &&
-                       facts->combined_aspects && facts->transfer_destination &&
+                       facts->plan_obligations_admitted &&
+                       facts->transfer_destination &&
                        facts->binding_valid && facts->layout_qualified &&
                        facts->materialization_scratch_valid &&
                        facts->fast_clear_plan_valid &&
@@ -1044,9 +1160,22 @@ r3v_native_zmask_fast_clear_select(
       device->pdevice->pci_vendor_id == R3V_NATIVE_ARMING_PCI_VENDOR &&
       device->pdevice->pci_device_id == R3V_NATIVE_ARMING_PCI_DEVICE;
    facts.image_contract_qualified = r3v_native_zmask_exact_image_contract(image);
-   facts.combined_aspects =
-      aspect_mask == (R300_ZB_COMBINED_CLEAR_ASPECT_DEPTH |
-                      R300_ZB_COMBINED_CLEAR_ASPECT_STENCIL);
+   const struct r3v_native_zmask_plan_request plan_request = {
+      .operation = R3V_NATIVE_ZMASK_PLAN_OPERATION_CLEAR,
+      .aspect_mask = aspect_mask,
+      .width = image->depth_contract.logical_extent.width,
+      .height = image->depth_contract.logical_extent.height,
+      .logical_width = image->depth_contract.logical_extent.width,
+      .logical_height = image->depth_contract.logical_extent.height,
+      .representation = representation,
+      .layout_admitted = image->zmask_layout_admitted,
+   };
+   struct r3v_native_zmask_plan_obligations plan_obligations;
+   facts.plan_obligations_admitted =
+      r3v_native_zmask_plan_obligations_init(&plan_request,
+                                             &plan_obligations) &&
+      r3v_native_zmask_plan_admit(&plan_request, &plan_obligations) ==
+         R3V_NATIVE_ZMASK_PLAN_ROUTE_FAST_CLEAR;
    facts.transfer_destination =
       (image->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) != 0u;
    facts.binding_valid = r3v_native_zmask_binding_valid(image);

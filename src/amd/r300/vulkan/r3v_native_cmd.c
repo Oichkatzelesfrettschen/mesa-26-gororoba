@@ -381,13 +381,34 @@ r3v_native_cmd_buffer_transition_image_representation(
    return VK_SUCCESS;
 }
 
+/* vk_errorf resolves the reporting instance through base.device->physical,
+ * so the refusal log runs for a client-visible device and the returned
+ * VkResult carries the obligation on every path. */
+static VkResult
+r3v_native_depth_backing_refuse(struct r3v_native_device *device,
+                                VkResult result, const char *obligation)
+{
+   if (device != NULL && device->vk.base.client_visible)
+      return vk_errorf(device, result,
+                       "ordinary depth backing refused: %s", obligation);
+   return result;
+}
+
 VkResult
 r3v_native_cmd_buffer_require_ordinary_depth_backing(
    struct r3v_native_cmd_buffer *cmd_buffer,
-   struct r3v_native_image *image)
+   struct r3v_native_image *image,
+   const struct r3v_native_zmask_plan_request *request,
+   struct r3v_native_zmask_plan_obligations *obligations_out)
 {
-   if (cmd_buffer == NULL || image == NULL || !image->depth_family)
+   if (cmd_buffer == NULL || image == NULL || !image->depth_family ||
+       request == NULL)
       return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device =
+      cmd_buffer->vk.base.device != NULL
+         ? container_of(cmd_buffer->vk.base.device, struct r3v_native_device,
+                        vk)
+         : NULL;
 
    const uint32_t original_count = cmd_buffer->image_state_count;
    struct r3v_native_cmd_image_state *state = NULL;
@@ -402,24 +423,56 @@ r3v_native_cmd_buffer_require_ordinary_depth_backing(
    const struct r3v_native_zmask_metadata_state *metadata =
       state->current_zmask_metadata_set ? &state->current_zmask_metadata
                                         : &state->required_zmask_metadata;
+
+   /* The command-buffer state is the authority on the representation the
+    * operation meets, so it replaces whatever the request declared. */
+   struct r3v_native_zmask_plan_request resolved = *request;
+   resolved.representation = representation;
+   resolved.layout_admitted = image->zmask_layout_admitted;
+   struct r3v_native_zmask_plan_obligations obligations;
+   if (!r3v_native_zmask_plan_obligations_init(&resolved, &obligations)) {
+      *state = original;
+      cmd_buffer->image_state_count = original_count;
+      return r3v_native_depth_backing_refuse(
+         device, VK_ERROR_INITIALIZATION_FAILED,
+         "the operation aspect mask and logical region declare no plan");
+   }
+   if (obligations_out != NULL)
+      *obligations_out = obligations;
+
    const struct r3v_native_zmask_metadata_state retired_metadata = {0};
-   if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED &&
+   if (!obligations.requires_materialization &&
+       representation == R3V_NATIVE_IMAGE_REPRESENTATION_UNCOMPRESSED_TILED &&
        r3v_native_zmask_metadata_equal(metadata, &retired_metadata))
       return VK_SUCCESS;
 
-   if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
-       metadata->status == R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR &&
-       metadata->generation != 0u) {
-      result = r3v_native_record_zmask_materialize(
-         r3v_native_cmd_buffer_to_handle(cmd_buffer),
-         r3v_native_image_to_handle(image), representation, metadata);
-      if (result == VK_SUCCESS)
-         return VK_SUCCESS;
+   if (obligations.requires_materialization) {
+      if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
+          metadata->status == R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR &&
+          metadata->generation != 0u) {
+         result = r3v_native_record_zmask_materialize(
+            r3v_native_cmd_buffer_to_handle(cmd_buffer),
+            r3v_native_image_to_handle(image), representation, metadata);
+         if (result == VK_SUCCESS)
+            return VK_SUCCESS;
+      } else if (representation ==
+                 R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED) {
+         *state = original;
+         cmd_buffer->image_state_count = original_count;
+         return r3v_native_depth_backing_refuse(
+            device, VK_ERROR_FEATURE_NOT_PRESENT,
+            "requires_materialization holds over a compressed ZMASK "
+            "representation, which no resolve route reaches");
+      }
    }
 
    *state = original;
    cmd_buffer->image_state_count = original_count;
-   return result == VK_SUCCESS ? VK_ERROR_INITIALIZATION_FAILED : result;
+   if (result != VK_SUCCESS)
+      return result;
+   return r3v_native_depth_backing_refuse(
+      device, VK_ERROR_INITIALIZATION_FAILED,
+      "the representation and ZMASK metadata carry no ordinary depth bytes");
 }
 
 VkResult
