@@ -22,10 +22,20 @@
         "API constants"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_instance.c",
-        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py"
+        {
+          "path": "src/amd/r300/vulkan/r3v_private.h",
+          "discovery": "rg --fixed-strings 'R3V_API_VERSION' src/amd/r300/vulkan/r3v_private.h"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_instance.c",
+          "discovery": "rg --fixed-strings 'r3v_EnumerateInstanceVersion' src/amd/r300/vulkan/r3v_instance.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_direct_table_sweep.c",
+          "discovery": "rg --fixed-strings 'reported_api_version' src/amd/r300/vulkan/tests/r3v_native_direct_table_sweep.c"
+        }
       ],
-      "falsifier": "Change the loader entry point or the reported API version without updating the entrypoint audit and the advertised-surface audit."
+      "falsifier": "Change R3V_API_VERSION or r3v_EnumerateInstanceVersion so the direct-table sweep no longer observes Vulkan 1.0."
     },
     {
       "id": "instance-physical-device-and-discovery",
@@ -36,9 +46,18 @@
         "Layer discovery commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_instance.c",
-        "src/amd/r300/vulkan/r3v_physical_device.c",
-        "src/amd/r300/vulkan/tests/r3v_native_advertised_surface_audit.py"
+        {
+          "path": "src/amd/r300/vulkan/r3v_instance.c",
+          "discovery": "rg --fixed-strings 'r3v_CreateInstance' src/amd/r300/vulkan/r3v_instance.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_physical_device.c",
+          "discovery": "rg --fixed-strings 'r3v_physical_device_try_create' src/amd/r300/vulkan/r3v_physical_device.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_advertised_surface_audit.py",
+          "discovery": "rg --fixed-strings 'DEVICE_EXTENSIONS' src/amd/r300/vulkan/tests/r3v_native_advertised_surface_audit.py"
+        }
       ],
       "falsifier": "Advertise an extension or feature whose driver route the advertised-surface audit cannot name."
     },
@@ -50,9 +69,18 @@
         "queue commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_native_device.c",
-        "src/amd/r300/vulkan/r3v_native_queue.c",
-        "src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c"
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_device.c",
+          "discovery": "rg --fixed-strings 'r3v_CreateDevice' src/amd/r300/vulkan/r3v_native_device.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_queue.c",
+          "discovery": "rg --fixed-strings 'r3v_native_queue_submit' src/amd/r300/vulkan/r3v_native_queue.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c",
+          "discovery": "rg --fixed-strings 'r3v_native_queue_status_finalize_submit' src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c"
+        }
       ],
       "falsifier": "Make a queue submission reach DRM without the exact arming and retention gate, or return success after an unrecorded command buffer."
     },
@@ -64,9 +92,18 @@
         "Memory management API commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_native_memory.c",
-        "src/amd/r300/vulkan/tests/r3v_native_memory_model_harness.c",
-        "src/amd/r300/vulkan/tests/r3v_memory_properties_contract_test.c"
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_memory.c",
+          "discovery": "rg --fixed-strings 'r3v_AllocateMemory' src/amd/r300/vulkan/r3v_native_memory.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_memory_model_harness.c",
+          "discovery": "rg --fixed-strings 'vkAllocateMemory' src/amd/r300/vulkan/tests/r3v_native_memory_model_harness.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_memory_properties_contract_test.c",
+          "discovery": "rg --fixed-strings 'r3v_memory_properties_check' src/amd/r300/vulkan/tests/r3v_memory_properties_contract_test.c"
+        }
       ],
       "falsifier": "Admit an allocation, map, flush, invalidate, or bind outside the one-BO and admitted-image contracts without extending the focused memory tests."
     },
@@ -77,8 +114,14 @@
         "Sparse resource memory management API commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py",
-        "src/amd/r300/vulkan/r3v_native_recording.c"
+        {
+          "path": "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
+          "discovery": "rg --fixed-strings 'vkQueueBindSparse' docs/hardware/r3v-vulkan-1-0-core-sheet.json"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py",
+          "discovery": "rg --fixed-strings 'CORE_FAIL_CLOSED' src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py"
+        }
       ],
       "falsifier": "Expose sparse requirements or accept vkQueueBindSparse without a native sparse-memory route and a new tracker review."
     },
@@ -92,9 +135,18 @@
         "Query commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_cpu_sync.c",
-        "src/amd/r300/vulkan/r3v_native_object.c",
-        "src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c"
+        {
+          "path": "src/amd/r300/vulkan/r3v_cpu_sync.c",
+          "discovery": "rg --fixed-strings 'r3v_cpu_sync_type' src/amd/r300/vulkan/r3v_cpu_sync.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_object.c",
+          "discovery": "rg --fixed-strings 'r3v_CreateQueryPool' src/amd/r300/vulkan/r3v_native_object.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c",
+          "discovery": "rg --fixed-strings 'r3v_native_queue_status_finalize_submit' src/amd/r300/vulkan/tests/r3v_native_queue_status_test.c"
+        }
       ],
       "falsifier": "Return success from a synchronization or query operation whose object state cannot reach completion or whose result has no defined producer."
     },
@@ -108,11 +160,24 @@
         "Image view commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_native_object.c",
-        "src/amd/r300/vulkan/r3v_native_image.c",
-        "src/amd/r300/vulkan/tests/r3v_native_transfer_ops_test.c"
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_object.c",
+          "discovery": "rg --fixed-strings 'r3v_CreateBufferView' src/amd/r300/vulkan/r3v_native_object.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_image.c",
+          "discovery": "rg --fixed-strings 'r3v_CreateImage' src/amd/r300/vulkan/r3v_native_image.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_object_lifetime_test.c",
+          "discovery": "rg --fixed-strings 'vkCreateBufferView' src/amd/r300/vulkan/tests/r3v_native_object_lifetime_test.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_transfer_ops_test.c",
+          "discovery": "rg --fixed-strings 'vkCmdCopyImage' src/amd/r300/vulkan/tests/r3v_native_transfer_ops_test.c"
+        }
       ],
-      "falsifier": "Expand image or buffer admission beyond the executed family, or let a buffer-view request report success after the fail-closed entrypoint audit classifies it as unsupported."
+      "falsifier": "Expand image, buffer, or buffer-view admission beyond the focused object-lifetime and transfer tests."
     },
     {
       "id": "shader-pipeline-and-descriptors",
@@ -126,10 +191,22 @@
         "Descriptor set commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_native_pipeline.c",
-        "src/amd/r300/vulkan/r3v_native_compute.c",
-        "src/amd/r300/vulkan/tests/r3v_native_pipeline_frontend_test.c",
-        "src/amd/r300/vulkan/tests/r3v_native_descriptor_test.c"
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_pipeline.c",
+          "discovery": "rg --fixed-strings 'r3v_CreateGraphicsPipelines' src/amd/r300/vulkan/r3v_native_pipeline.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_compute.c",
+          "discovery": "rg --fixed-strings 'r3v_CmdDispatch' src/amd/r300/vulkan/r3v_native_compute.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_pipeline_frontend_test.c",
+          "discovery": "rg --fixed-strings 'r3v_vertex_job_from_spirv' src/amd/r300/vulkan/tests/r3v_native_pipeline_frontend_test.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_descriptor_test.c",
+          "discovery": "rg --fixed-strings 'vkAllocateDescriptorSets' src/amd/r300/vulkan/tests/r3v_native_descriptor_test.c"
+        }
       ],
       "falsifier": "Admit a shader, descriptor, sampler, or pipeline shape that lacks a native lowering route and a focused positive and refusal test."
     },
@@ -142,9 +219,22 @@
         "Command buffer commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_native_draw.c",
-        "src/amd/r300/vulkan/r3v_native_recording.c",
-        "src/amd/r300/vulkan/tests/r3v_native_object_lifetime_test.c"
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_draw.c",
+          "discovery": "rg --fixed-strings 'r3v_CmdDraw' src/amd/r300/vulkan/r3v_native_draw.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_cmd.c",
+          "discovery": "rg --fixed-strings 'r3v_BeginCommandBuffer' src/amd/r300/vulkan/r3v_native_cmd.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_recording.c",
+          "discovery": "rg --fixed-strings 'r3v_CmdBeginRenderPass' src/amd/r300/vulkan/r3v_native_recording.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c",
+          "discovery": "rg --fixed-strings 'vkCreateRenderPass' src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c"
+        }
       ],
       "falsifier": "Permit a render-pass or command-buffer lifetime transition that leaves a public command buffer executable without a defined native state carrier."
     },
@@ -155,9 +245,18 @@
         "Command buffer building commands"
       ],
       "evidence": [
-        "src/amd/r300/vulkan/r3v_native_recording.c",
-        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py",
-        "src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c"
+        {
+          "path": "src/amd/r300/vulkan/r3v_native_recording.c",
+          "discovery": "rg --fixed-strings 'r3v_CmdPipelineBarrier' src/amd/r300/vulkan/r3v_native_recording.c"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py",
+          "discovery": "rg --fixed-strings 'NATIVE_LIVE_CMDS' src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c",
+          "discovery": "rg --fixed-strings 'vkCmdDraw' src/amd/r300/vulkan/tests/r3v_native_public_surface_harness.c"
+        }
       ],
       "falsifier": "Allow a core vkCmd entry point outside the qualified draw, transfer, clear, or experimental compute subsets to succeed without recording executable work."
     },
@@ -168,8 +267,14 @@
         "Types not directly used by the API. Include e.g. structs that are not parameter types of commands, but still defined by the API."
       ],
       "evidence": [
-        "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
-        "src/amd/r300/vulkan/tests/r3v_native_entrypoint_audit.py"
+        {
+          "path": "docs/hardware/r3v-vulkan-1-0-core-sheet.json",
+          "discovery": "rg --fixed-strings 'VkBufferMemoryBarrier' docs/hardware/r3v-vulkan-1-0-core-sheet.json"
+        },
+        {
+          "path": "src/amd/r300/vulkan/tests/r3v_vulkan_1_0_core_tracker_audit.py",
+          "discovery": "rg --fixed-strings 'requirement_blocks' src/amd/r300/vulkan/tests/r3v_vulkan_1_0_core_tracker_audit.py"
+        }
       ],
       "falsifier": "Claim coverage for an auxiliary core type without a source path, a matching command contract, and a focused test."
     }

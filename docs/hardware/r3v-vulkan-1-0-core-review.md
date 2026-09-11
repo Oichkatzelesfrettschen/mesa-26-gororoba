@@ -33,25 +33,31 @@ curl --fail --location --silent --show-error \
   https://raw.githubusercontent.com/KhronosGroup/Vulkan-Docs/ab08f0951ef1ad9b84db93f971e113c1d9d55609/src/spec/vk.xml \
   -o /tmp/vk-1.0.69-core.xml
 sha256sum /tmp/vk-1.0.69-core.xml
-python3.14 src/amd/r300/vulkan/tests/r3v_vulkan_1_0_core_tracker_audit.py \
+"$PYTHON" src/amd/r300/vulkan/tests/r3v_vulkan_1_0_core_tracker_audit.py \
   --sheet docs/hardware/r3v-vulkan-1-0-core-sheet.json \
   --tracker docs/hardware/r3v-vulkan-1-0-core-implementation-tracker.json \
   --registry-xml /tmp/vk-1.0.69-core.xml
 ```
 
-The expected digest appears in the sheet and in the audit. The audit rejects a
-different XML payload, a changed direct-requirement projection, duplicate
-tracker coverage, an unknown requirement block, a missing requirement block,
-or a status that claims conformance.
+Set `PYTHON` to the interpreter resolved by the active Meson configuration.
+The expected XML digest appears in the sheet and in the audit. The registered
+offline test also compares the complete ordered requirement-block projection
+with the SHA-256 digest derived from that XML. The audit rejects a different
+XML payload, a changed direct-requirement projection, duplicate tracker
+coverage within or across rows, an unknown requirement block, a missing
+requirement block, a non-object JSON input, an evidence locator without its
+exact `rg --fixed-strings` discovery command, or a status that claims
+conformance.
 
 ## Source review at Mesa `8f6d3ff8fa3fd0c1651b6909c247bebbd1a30e07`
 
 The native R3V ICD owns a Gallium-free Radeon DRM transport. The separation
 audit examines native source and binary links for Gallium identifiers and
 symbols. `r3v_native_entrypoint_audit.py` classifies core entry points and
-holds the native dispatch closure to its declared set. The check establishes a
-source-level boundary; it supplies neither a loader observation nor a Vulkan
-conformance result.
+holds the native dispatch closure to its declared set. The compiled
+direct-table sweep calls `vkEnumerateInstanceVersion` and checks the Vulkan
+1.0 major and minor version. The checks establish a source-level boundary;
+they supply neither a loader observation nor a Vulkan conformance result.
 
 The implementation tracker records eleven mechanism groups:
 

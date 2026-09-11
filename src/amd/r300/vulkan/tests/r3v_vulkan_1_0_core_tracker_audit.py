@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import copy
 import hashlib
 import json
 import sys
@@ -21,9 +22,9 @@ import tempfile
 import xml.etree.ElementTree as element_tree
 from pathlib import Path
 
-
 SOURCE_COMMIT = "ab08f0951ef1ad9b84db93f971e113c1d9d55609"
 SOURCE_SHA256 = "820d7e3f6fb54d955b0bbd89a0c96be3e66f9a7cc60a7eb28d820ad57c6c2b4e"
+PROJECTION_SHA256 = "ddd64cfa307fc9c00561970900396fc45ccfcb543e1979419e27a9452a9e92c7"
 ALLOWED_STATUSES = frozenset({"bounded", "refused", "unassessed"})
 
 
@@ -33,12 +34,22 @@ class AuditFailure(Exception):
 
 def read_json(path):
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise AuditFailure(f"cannot read {path}: {error}") from error
+    if not isinstance(document, dict):
+        raise AuditFailure(f"{path} must contain a JSON object")
+    return document
 
 
-def sheet_blocks(sheet):
+def projection_digest(blocks):
+    canonical = json.dumps(
+        blocks, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def sheet_blocks(sheet, expected_projection_sha256=PROJECTION_SHA256):
     if sheet.get("schema_version") != 1:
         raise AuditFailure("sheet schema_version must equal 1")
     source = sheet.get("source")
@@ -53,6 +64,8 @@ def sheet_blocks(sheet):
         raise AuditFailure("sheet projection must be an object")
     if projection.get("feature") != "VK_VERSION_1_0":
         raise AuditFailure("sheet must project VK_VERSION_1_0")
+    if projection.get("api") != "vulkan" or projection.get("version") != "1.0":
+        raise AuditFailure("sheet must project the Vulkan 1.0 API")
     blocks = projection.get("requirement_blocks")
     if not isinstance(blocks, list) or not blocks:
         raise AuditFailure("sheet requirement_blocks must be a nonempty array")
@@ -76,11 +89,21 @@ def sheet_blocks(sheet):
         raise AuditFailure("sheet repeats a requirement-block name")
     if len(commands) != len(set(commands)):
         raise AuditFailure("sheet repeats a core command")
+    if projection_digest(blocks) != expected_projection_sha256:
+        raise AuditFailure(
+            "sheet requirement blocks differ from the pinned registry projection"
+        )
     counts = projection.get("counts")
     if not isinstance(counts, dict):
         raise AuditFailure("sheet counts must be an object")
-    if counts.get("commands") != len(commands):
-        raise AuditFailure("sheet command count disagrees with its blocks")
+    expected_counts = {
+        "requirement_blocks": len(blocks),
+        "commands": len(commands),
+        "types": sum(len(block["types"]) for block in blocks),
+        "enums": sum(len(block["enums"]) for block in blocks),
+    }
+    if counts != expected_counts:
+        raise AuditFailure("sheet counts disagree with its requirement blocks")
     return set(names)
 
 
@@ -132,8 +155,13 @@ def audit_registry_projection(sheet, path):
         raise AuditFailure("sheet counts disagree with the pinned registry XML")
 
 
-def audit(sheet, tracker, registry_xml=None):
-    block_names = sheet_blocks(sheet)
+def audit(
+    sheet,
+    tracker,
+    registry_xml=None,
+    expected_projection_sha256=PROJECTION_SHA256,
+):
+    block_names = sheet_blocks(sheet, expected_projection_sha256)
     if registry_xml is not None:
         audit_registry_projection(sheet, registry_xml)
     if tracker.get("schema_version") != 1:
@@ -160,12 +188,28 @@ def audit(sheet, tracker, registry_xml=None):
             )
         evidence = row.get("evidence")
         falsifier = row.get("falsifier")
-        if (
-            not isinstance(evidence, list)
-            or not evidence
-            or not all(isinstance(value, str) and value for value in evidence)
-        ):
+        if not isinstance(evidence, list) or not evidence:
             raise AuditFailure(f"tracker row {identifier} lacks evidence locators")
+        for locator in evidence:
+            if not isinstance(locator, dict) or set(locator) != {
+                "path",
+                "discovery",
+            }:
+                raise AuditFailure(
+                    f"tracker row {identifier} has a malformed evidence locator"
+                )
+            path = locator["path"]
+            discovery = locator["discovery"]
+            if (
+                not isinstance(path, str)
+                or not path
+                or not isinstance(discovery, str)
+                or not discovery.startswith("rg --fixed-strings ")
+                or path not in discovery
+            ):
+                raise AuditFailure(
+                    f"tracker row {identifier} has a non-reproducible evidence locator"
+                )
         if not isinstance(falsifier, str) or not falsifier:
             raise AuditFailure(f"tracker row {identifier} lacks a falsifier")
         blocks = row.get("requirement_blocks")
@@ -175,6 +219,10 @@ def audit(sheet, tracker, registry_xml=None):
             or not all(isinstance(value, str) and value for value in blocks)
         ):
             raise AuditFailure(f"tracker row {identifier} lacks requirement blocks")
+        if len(blocks) != len(set(blocks)):
+            raise AuditFailure(
+                f"tracker row {identifier} maps a requirement block more than once"
+            )
         overlap = seen.intersection(blocks)
         if overlap:
             raise AuditFailure(
@@ -200,6 +248,8 @@ def selftest():
         "source": {"commit": SOURCE_COMMIT, "xml_sha256": SOURCE_SHA256},
         "projection": {
             "feature": "VK_VERSION_1_0",
+            "api": "vulkan",
+            "version": "1.0",
             "requirement_blocks": [
                 {
                     "name": "memory",
@@ -208,7 +258,12 @@ def selftest():
                     "enums": [],
                 }
             ],
-            "counts": {"commands": 1},
+            "counts": {
+                "requirement_blocks": 1,
+                "commands": 1,
+                "types": 0,
+                "enums": 0,
+            },
         },
     }
     tracker = {
@@ -219,29 +274,62 @@ def selftest():
             {
                 "id": "memory",
                 "status": "bounded",
-                "evidence": ["source"],
+                "evidence": [
+                    {
+                        "path": "source.c",
+                        "discovery": "rg --fixed-strings 'vkMapMemory' source.c",
+                    }
+                ],
                 "falsifier": "remove source",
                 "requirement_blocks": ["memory"],
             }
         ],
     }
-    audit(sheet, tracker)
+    expected_digest = projection_digest(sheet["projection"]["requirement_blocks"])
+    audit(sheet, tracker, expected_projection_sha256=expected_digest)
     tracker["rows"][0]["status"] = "conformant"
     try:
-        audit(sheet, tracker)
+        audit(sheet, tracker, expected_projection_sha256=expected_digest)
     except AuditFailure:
         pass
     else:
         raise AuditFailure("selftest admitted a conformance status")
     tracker["rows"][0]["status"] = "bounded"
+    tracker["rows"][0]["requirement_blocks"] = ["memory", "memory"]
+    try:
+        audit(sheet, tracker, expected_projection_sha256=expected_digest)
+    except AuditFailure:
+        pass
+    else:
+        raise AuditFailure("selftest admitted duplicate coverage within one row")
+    tracker["rows"][0]["requirement_blocks"] = ["memory"]
     tracker["rows"].append(dict(tracker["rows"][0]))
     try:
-        audit(sheet, tracker)
+        audit(sheet, tracker, expected_projection_sha256=expected_digest)
     except AuditFailure:
         pass
     else:
         raise AuditFailure("selftest admitted duplicate block coverage")
+    tracker["rows"].pop()
+    mutated_sheet = copy.deepcopy(sheet)
+    mutated_sheet["projection"]["requirement_blocks"][0]["commands"][0] = (
+        "vkUnmapMemory"
+    )
+    try:
+        audit(mutated_sheet, tracker, expected_projection_sha256=expected_digest)
+    except AuditFailure:
+        pass
+    else:
+        raise AuditFailure("selftest admitted a mutated registry projection")
     with tempfile.TemporaryDirectory() as temporary_directory:
+        scalar_json = Path(temporary_directory) / "scalar.json"
+        scalar_json.write_text("[]", encoding="utf-8")
+        try:
+            read_json(scalar_json)
+        except AuditFailure:
+            pass
+        else:
+            raise AuditFailure("selftest admitted a non-object JSON document")
         wrong_registry = Path(temporary_directory) / "vk.xml"
         wrong_registry.write_text("<registry/>", encoding="utf-8")
         try:

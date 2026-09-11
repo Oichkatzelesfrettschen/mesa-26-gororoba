@@ -107,7 +107,7 @@ NATIVE_BEHAVIOR = {
     "BindImageMemory": "NATIVE_LIVE",
     "CreateImage": "NATIVE_LIVE",
     "CreateImageView": "NATIVE_LIVE",
-    "CreateBufferView": "CORE_FAIL_CLOSED",
+    "CreateBufferView": "NATIVE_LIVE",
     "CreateSampler": "CORE_METADATA_ONLY",
     "CreateEvent": "NATIVE_LIVE",
     "CreateQueryPool": "NATIVE_LIVE",

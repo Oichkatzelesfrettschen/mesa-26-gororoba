@@ -287,6 +287,20 @@ main(void)
    if (create_instance == NULL)
       return 1;
 
+   PFN_vkEnumerateInstanceVersion enumerate_instance_version =
+      (PFN_vkEnumerateInstanceVersion)vk_icdGetInstanceProcAddr(
+         NULL, "vkEnumerateInstanceVersion");
+   uint32_t reported_api_version = 0;
+   CHECK(enumerate_instance_version != NULL &&
+            enumerate_instance_version(&reported_api_version) == VK_SUCCESS,
+         "vkEnumerateInstanceVersion resolves and succeeds");
+   CHECK(VK_API_VERSION_MAJOR(reported_api_version) == 1 &&
+            VK_API_VERSION_MINOR(reported_api_version) == 0,
+         "vkEnumerateInstanceVersion reports Vulkan 1.0, got %u.%u.%u",
+         VK_API_VERSION_MAJOR(reported_api_version),
+         VK_API_VERSION_MINOR(reported_api_version),
+         VK_API_VERSION_PATCH(reported_api_version));
+
    /* Only the global commands answer a NULL instance; every other scope
     * requires one, so a pointer here would be the table answering a query the
     * specification leaves it no instance to resolve against.
