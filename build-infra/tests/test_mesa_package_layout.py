@@ -467,7 +467,7 @@ def test_lease_fixture_stops_when_directory_creation_fails(tmp_path: Path) -> No
 
     binaries = tmp_path / "bin"
     binaries.mkdir()
-    python = binaries / "python3"
+    python = binaries / "mesa-python"
     python.write_text(
         "#!/bin/sh\n"
         "case \"$*\" in *'create-test-directory --label=build-lease'*) "
@@ -484,6 +484,7 @@ def test_lease_fixture_stops_when_directory_creation_fails(tmp_path: Path) -> No
         executable.chmod(0o755)
     environment = dict(os.environ)
     environment["PATH"] = str(binaries) + os.pathsep + environment["PATH"]
+    environment["PYTHON"] = str(python)
     environment.update(
         GIT_CONFIG_COUNT="1",
         GIT_CONFIG_KEY_0="core.fsmonitor",

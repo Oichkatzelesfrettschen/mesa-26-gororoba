@@ -138,6 +138,7 @@ def test_namespace_launcher_preserves_selected_control_checkout(
         PATH=str(binaries) + os.pathsep + environment["PATH"],
         FIXTURE_ROOT=str(tmp_path),
         BIND_BEHAVIOR=bind_behavior,
+        PYTHON=sys.executable,
         PYTHONDONTWRITEBYTECODE="1",
     )
     result = subprocess.run(
