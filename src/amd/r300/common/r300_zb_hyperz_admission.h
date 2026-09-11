@@ -26,9 +26,35 @@
  * lets a caller acquire ownership and resubmit instead of losing the
  * device.
  *
+ * Ownership is one of three mechanisms the parser applies to a PACKET0
+ * register, and the other two answer before it:
+ *
+ *    reg run top >= 0x4f80   r100_cs_parse_packet0 rejects the packet
+ *                            for lying outside the safe bitmap's extent
+ *    reg absent from both    r300_packet0_check reaches its default arm
+ *    reg_srcs/r300 and the   and reports "Forbidden register", whatever
+ *    check's case labels     the ownership
+ *    otherwise               the table above judges it
+ *
+ * ZB_ZMASK_WRINDEX (0x4f38) and ZB_ZMASK_RDINDEX (0x4f40) land in the
+ * second row, which an RS485M measured: the first ZMASK submission
+ * through the public lifecycle route carried a zero write to 0x4f38 and
+ * the parser reported "Forbidden register 0x4F38 in cs at 14
+ * (val=00000000)" with DRM_RADEON_CS answering EINVAL.  The rows for
+ * them refuse with no ownership question asked, so a caller reads a
+ * stream it must rewrite rather than an acquire it should retry.
+ *
+ * The scope of an ADMIT is this table: the stream carries no HyperZ
+ * write ownership refuses and no register these rows forbid.  The
+ * kernel's full PACKET0 authority is the union of reg_srcs/r300 and the
+ * r300_packet0_check case labels.  That union is data in
+ * r300_kernel_packet0_authority.c, and the ZMASK cross-check test holds
+ * every register a plan writes against it.
+ *
  * Source: r300_packet0_check and r300_packet3_check in
- * drivers/gpu/drm/radeon/r300.c; radeon_info_ioctl RADEON_INFO_WANT_HYPERZ
- * in radeon_kms.c.
+ * drivers/gpu/drm/radeon/r300.c; r100_cs_parse_packet0 in r100.c;
+ * table_build in mkregtable.c; radeon_info_ioctl
+ * RADEON_INFO_WANT_HYPERZ in radeon_kms.c.
  */
 
 #ifndef R300_ZB_HYPERZ_ADMISSION_H
@@ -51,6 +77,9 @@ enum r300_zb_hyperz_kernel_disposition {
 enum r300_zb_hyperz_row_kind {
    R300_ZB_HYPERZ_ROW_PACKET0 = 0,
    R300_ZB_HYPERZ_ROW_PACKET3,
+   /* A register the parser opens for no client: every write refuses,
+    * every value, both ownership states. */
+   R300_ZB_HYPERZ_ROW_PACKET0_FORBIDDEN,
 };
 
 struct r300_zb_hyperz_row {
@@ -58,7 +87,8 @@ struct r300_zb_hyperz_row {
    /* PACKET0: the register; PACKET3: the opcode in header position. */
    uint32_t key;
    /* PACKET0: the bits ownership gates; a value with none of them set is
-    * not a HyperZ write.  Unused for a PACKET3 row. */
+    * not a HyperZ write.  A PACKET3 row and a forbidden row judge no
+    * bits and carry zero. */
    uint32_t gated_mask;
    enum r300_zb_hyperz_kernel_disposition disposition;
    const char *name;
@@ -73,10 +103,34 @@ enum r300_zb_hyperz_verdict {
    R300_ZB_HYPERZ_REFUSE_OWNERSHIP,
    /* The stream is malformed before the scan could judge it. */
    R300_ZB_HYPERZ_REFUSE_STREAM,
+   /* The write addresses a register r300_packet0_check answers from its
+    * default arm.  An acquire changes nothing; the stream is rewritten
+    * or it is refused. */
+   R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER,
+   /* The write addresses a register at or above
+    * R300_ZB_HYPERZ_PACKET0_REGISTER_LIMIT, which r100_cs_parse_packet0
+    * rejects before r300_packet0_check runs. */
+   R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE,
+   R300_ZB_HYPERZ_VERDICT_COUNT,
 };
 
-/* One register write judged against ownership.  A register outside the
- * table, or a gated register whose gated bits are all clear, admits. */
+/* The safe bitmap's extent, and so the first register no PACKET0 run
+ * may reach: table_build in mkregtable.c sizes the r300 table as
+ * ((offset_max >> 2) + 31) / 32 words over the 0x4f60 the reg_srcs/r300
+ * header names, giving 159 words over registers 0 through 0x4f7c.
+ * r100_cs_parse_packet0 tests the run's top register against the extent
+ * and rejects the packet with -EINVAL; the scan here reports the first
+ * register of the run that crosses, so the two refuse the same streams.
+ */
+#define R300_ZB_HYPERZ_PACKET0_REGISTER_LIMIT 0x4f80u
+
+/* One register write judged against the three mechanisms, in the order
+ * the parser applies them: a register at or above the bitmap extent
+ * answers REFUSE_REGISTER_RANGE, a forbidden row answers
+ * REFUSE_FORBIDDEN_REGISTER for every value and both ownership states,
+ * and a gated row answers on ownership.  A register this table does not
+ * name, or a gated register whose gated bits are all clear, admits.
+ */
 enum r300_zb_hyperz_verdict
 r300_zb_hyperz_admit_register(uint32_t reg, uint32_t value,
                               enum r300_zb_hyperz_ownership ownership,
@@ -103,9 +157,10 @@ r300_zb_hyperz_admit_stream(const uint32_t *ib, uint32_t ib_size_dwords,
 
 const char *r300_zb_hyperz_verdict_name(enum r300_zb_hyperz_verdict v);
 
-/* Table self-consistency: keys unique per kind, every PACKET0 row gated
- * on at least one bit, every row named with a kernel rule.  Returns 0 or
- * -EINVAL. */
+/* Table self-consistency: keys unique per kind and never a gated and a
+ * forbidden row at once, every gated PACKET0 row gated on at least one
+ * bit, every forbidden row gating none, every row named with a kernel
+ * rule.  Returns 0 or -EINVAL. */
 int r300_zb_hyperz_rows_self_check(void);
 
 #endif /* R300_ZB_HYPERZ_ADMISSION_H */

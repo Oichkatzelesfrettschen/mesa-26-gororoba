@@ -42,6 +42,19 @@ static const struct r300_zb_hyperz_row rows[] = {
    { R300_ZB_HYPERZ_ROW_PACKET3, R300_PACKET3_3D_CLEAR_ZMASK, 0u,
      R300_ZB_HYPERZ_KERNEL_REJECTS, "PACKET3 3D_CLEAR_ZMASK",
      "r300_packet3_check PACKET3_3D_CLEAR_ZMASK: rejects for a non-owner" },
+   /* The ZMASK RAM index ports.  3D_CLEAR_ZMASK addresses the RAM from
+    * its own start-index operand, so a plan reaches the metadata without
+    * either register, and Gallium's r300 driver writes neither. */
+   { R300_ZB_HYPERZ_ROW_PACKET0_FORBIDDEN, R300_ZB_ZMASK_WRINDEX, 0u,
+     R300_ZB_HYPERZ_KERNEL_REJECTS, "ZB_ZMASK_WRINDEX",
+     "reg_srcs/r300 omits 0x4f38 and r300_packet0_check carries no case "
+     "for it, so its default arm reports \"Forbidden register\" whatever "
+     "the ownership" },
+   { R300_ZB_HYPERZ_ROW_PACKET0_FORBIDDEN, R300_ZB_ZMASK_RDINDEX, 0u,
+     R300_ZB_HYPERZ_KERNEL_REJECTS, "ZB_ZMASK_RDINDEX",
+     "reg_srcs/r300 omits 0x4f40 and r300_packet0_check carries no case "
+     "for it, so its default arm reports \"Forbidden register\" whatever "
+     "the ownership" },
 };
 
 #define ROW_COUNT (sizeof(rows) / sizeof(rows[0]))
@@ -64,6 +77,12 @@ r300_zb_hyperz_verdict_name(enum r300_zb_hyperz_verdict v)
       return "HyperZ write without ownership";
    case R300_ZB_HYPERZ_REFUSE_STREAM:
       return "malformed stream";
+   case R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER:
+      return "write to a register the kernel forbids every client";
+   case R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE:
+      return "write above the safe-register bitmap's extent";
+   case R300_ZB_HYPERZ_VERDICT_COUNT:
+      break;
    }
    return NULL;
 }
@@ -83,10 +102,27 @@ r300_zb_hyperz_admit_register(uint32_t reg, uint32_t value,
                               enum r300_zb_hyperz_ownership ownership,
                               const struct r300_zb_hyperz_row **row_out)
 {
-   const struct r300_zb_hyperz_row *row =
-      find_row(R300_ZB_HYPERZ_ROW_PACKET0, reg);
    if (row_out != NULL)
       *row_out = NULL;
+
+   /* r100_cs_parse_packet0 tests the extent before it reads the bitmap,
+    * so this answers before any row does. */
+   if (reg >= R300_ZB_HYPERZ_PACKET0_REGISTER_LIMIT)
+      return R300_ZB_HYPERZ_REFUSE_REGISTER_RANGE;
+
+   const struct r300_zb_hyperz_row *forbidden =
+      find_row(R300_ZB_HYPERZ_ROW_PACKET0_FORBIDDEN, reg);
+   if (forbidden != NULL) {
+      /* The default arm of r300_packet0_check reads neither the value
+       * nor hyperz_filp, so a zero write under ownership refuses with
+       * every other write. */
+      if (row_out != NULL)
+         *row_out = forbidden;
+      return R300_ZB_HYPERZ_REFUSE_FORBIDDEN_REGISTER;
+   }
+
+   const struct r300_zb_hyperz_row *row =
+      find_row(R300_ZB_HYPERZ_ROW_PACKET0, reg);
    if (row == NULL || (value & row->gated_mask) == 0u)
       return R300_ZB_HYPERZ_ADMIT;
    if (row_out != NULL)
@@ -138,13 +174,14 @@ r300_zb_hyperz_admit_stream(const uint32_t *ib, uint32_t ib_size_dwords,
             const uint32_t reg = one_reg ? base : base + 4u * k;
             const uint32_t value = ib[i + 1u + k];
             const struct r300_zb_hyperz_row *row = NULL;
-            if (r300_zb_hyperz_admit_register(reg, value, ownership, &row) ==
-                R300_ZB_HYPERZ_REFUSE_OWNERSHIP) {
+            const enum r300_zb_hyperz_verdict verdict =
+               r300_zb_hyperz_admit_register(reg, value, ownership, &row);
+            if (verdict != R300_ZB_HYPERZ_ADMIT) {
                site->ib_index = i + 1u + k;
                site->reg_or_opcode = reg;
                site->value = value;
                site->row = row;
-               return R300_ZB_HYPERZ_REFUSE_OWNERSHIP;
+               return verdict;
             }
          }
       } else {
@@ -176,10 +213,25 @@ r300_zb_hyperz_rows_self_check(void)
       if (r->kind == R300_ZB_HYPERZ_ROW_PACKET3 &&
           (r->key & ~0xff00u) != 0u)
          return -EINVAL;
+      /* A forbidden row judges no bits and names a register inside the
+       * bitmap's extent, which is what makes the default arm rather than
+       * the extent test the mechanism that refuses it. */
+      if (r->kind == R300_ZB_HYPERZ_ROW_PACKET0_FORBIDDEN &&
+          (r->gated_mask != 0u ||
+           r->key >= R300_ZB_HYPERZ_PACKET0_REGISTER_LIMIT))
+         return -EINVAL;
       for (size_t j = 0; j < i; j++) {
          if (rows[j].kind == r->kind && rows[j].key == r->key)
             return -EINVAL;
       }
+      /* One register answers through one mechanism: a row cannot be
+       * gated on ownership and forbidden outright at once. */
+      if (r->kind == R300_ZB_HYPERZ_ROW_PACKET0 &&
+          find_row(R300_ZB_HYPERZ_ROW_PACKET0_FORBIDDEN, r->key) != NULL)
+         return -EINVAL;
+      if (r->kind == R300_ZB_HYPERZ_ROW_PACKET0_FORBIDDEN &&
+          find_row(R300_ZB_HYPERZ_ROW_PACKET0, r->key) != NULL)
+         return -EINVAL;
    }
    return 0;
 }
