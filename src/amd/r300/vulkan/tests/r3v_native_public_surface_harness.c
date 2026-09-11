@@ -2182,8 +2182,8 @@ main(void)
       .pNext = &device_dedicated,
    };
 
-   /* Calibrate the exact-mask verdict by accepting only 0x1 and rejecting
-    * the empty and extra-bit masks before checking the device query.
+   /* Calibrate the host-visible mask against empty, device-only, and
+    * mixed masks before checking the device query.
     */
    assert(r3v_native_memory_type_bits_are_host_visible_only(
       R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS));
