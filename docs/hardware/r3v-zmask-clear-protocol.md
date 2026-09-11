@@ -27,8 +27,9 @@ pixel area by the pixels one ZMASK dword covers.
 `r300_zmask_layout_compute_at_block` takes the block as an argument
 instead: `R300_ZCOMP_4X4` pins the smaller block whatever the level
 would have chosen, and `R300_ZCOMP_8X8` asks for the larger one and
-yields the level's own decision. Every stage in this ladder consumes the
-4x4 form, for the reason stated under stage C. The result fits when
+yields the level's own decision. Every stage consumes the 4x4 form by
+default, for the reason stated under stage C; stage F consumes the 8x8
+form under an explicit request, for the reason stated there. The result fits when
 the dword count stays within `zmask_ram * pipes`, which is 5120 on one
 RS480 pipe. A level that does not fit yields a zero pitch and a zero
 dword count, and the bind stages refuse to build for it, matching
@@ -45,7 +46,7 @@ two bytes per pixel (`R300_ZB_DEPTH_CONTROL_DEPTH_CPP`), and
 `R300_DEPTHMACROTILE_DISABLE | R300_DEPTHMICROTILE_LINEAR`. ZMASK admits
 a 32-bit depth format on a microtiled level alone, and 8x8 compression
 needs macrotiling on top of that, so the existing cell's layout reports
-zero dwords and stages C and D refuse it with `-EINVAL`.
+zero dwords and every binding stage refuses it with `-EINVAL`.
 `r300-zmask-clear-plan` pins exactly that, so the gap fails a test rather
 than waiting on a run.
 
@@ -122,6 +123,8 @@ word.
 | B | ownership acquire | none | required |
 | C | ZMASK bind and clear | `ZB_ZMASK_OFFSET`, `ZB_ZMASK_PITCH`, `ZB_ZMASK_WRINDEX`, `ZB_ZMASK_RDINDEX`, `GB_Z_PEQ_CONFIG`, `ZB_BW_CNTL` = 0, PACKET3 `3D_CLEAR_ZMASK` | required |
 | D | fast fill | stage C with `ZB_BW_CNTL` = `FAST_FILL_ENABLE` | required |
+| E | compressed read | stage C with `ZB_BW_CNTL` = `FAST_FILL_ENABLE \| RD_COMP_ENABLE` | required |
+| F | compressed write | stage C with `ZB_BW_CNTL` = `FAST_FILL_ENABLE \| RD_COMP_ENABLE \| WR_COMP_ENABLE` | required |
 
 ### A: ordinary depth, HyperZ absent
 
@@ -176,8 +179,11 @@ equations in configurations where the guide asks for 4x4. The guide is
 the higher-ranked authority and decides the value the ladder emits. No
 retained silicon observation of either configuration exists, so the
 disagreement is a recorded conflict rather than a settled question, and
-a stage that enables compression is where 8x8 first becomes admissible.
-That stage is not in this ladder.
+stage F, which enables compressed writes, is where 8x8 first becomes
+admissible. `r300_zmask_clear_stage_admits_block` opens the larger block
+at stage F alone, and stage F still pins 4x4 for a caller that names no
+block, so the unsettled question stays out of every default stream and
+enters only where a caller states `R300_ZCOMP_8X8` explicitly.
 
 With every compression enable off, the depth pipe reads and writes
 depth memory as it did in A, so the expected observation against A is an
@@ -217,28 +223,138 @@ The color image is the fast-fill resolve's verdict.
 
 Rule 8 of the fast-clear notes in `r300_blit.c` forbids FASTFILL with
 `RD_COMP_ENABLE` off while `WR_COMP_ENABLE` is on. Both are off in C
-and D, so the ladder stays inside that rule.
+and D, stage E adds `RD_COMP_ENABLE` before stage F adds
+`WR_COMP_ENABLE`, and `r300_zmask_clear_bw_cntl_check` reads every
+stage's word before the builder emits it, so the forbidden combination
+is unreachable from the stage table rather than merely absent from it.
 
-## Order after D
+### E: compressed read
 
-`r300_update_hyperz` sets the enables in two groups, which is what makes
-the next steps separable rather than arbitrary: the decompression path
-sets `FAST_FILL_ENABLE | RD_COMP_ENABLE`, and the in-use path sets
-`FAST_FILL_ENABLE | RD_COMP_ENABLE | WR_COMP_ENABLE`. The order after D
-follows those groups:
+`ZB_BW_CNTL` gains `RD_COMP_ENABLE` beside `FAST_FILL_ENABLE`, which is
+the pair `r300_update_hyperz` emits under `zmask_decompress` and nothing
+else. The depth pipe now decompresses a tile whose ZMASK bits call it
+compressed instead of reading depth memory straight through, which is the
+step past returning the clear value for a zeroed tile.
 
-1. `RD_COMP_ENABLE` -- the depth pipe decompresses tiles whose ZMASK
-   bits say compressed, which is the step past reading the clear value
-   for a zeroed tile. Gallium's decompression path pairs it with
-   FAST_FILL and nothing else, so it stands alone as a stage.
-2. `WR_COMP_ENABLE` -- passing fragments write compressed tiles back and
-   the ZMASK stops being read-only. A defect here changes depth memory,
-   which the depth oracle reads directly.
-3. HiZ -- `hiz_ram` is 0 on `CHIP_RS480`, so HiZ has no RAM on this part
-   and no HiZ stage is reachable here. The step exists for the discrete
-   R3xx and R5xx parts that carry HiZ RAM.
+The block stays `R300_ZCOMP_4X4`. Compressed writes are still off, so a
+passing fragment stores uncompressed depth and the metadata the stage
+consumes is whatever stage C wrote, which is zeros at 4x4 coverage.
 
-Each step keeps the ownership requirement stages C and D establish, and
+Stage E cannot demonstrate its own evidence class on its own, and the
+ordering constraint is the reason the qualification sequence below exists.
+Stage C zeroes the whole ZMASK, so every tile is in the cleared state and
+the pipe returns `ZB_DEPTHCLEARVALUE` for all of them; E's expected
+observation against D is therefore an identical color and depth image,
+and that observation is equally consistent with the metadata being
+ignored. A compressed tile to decompress reaches the ZMASK only from a
+compressed write, which is stage F. The claim in this paragraph is a
+source-derived model from `r300_update_hyperz` and the fast-clear notes
+in `r300_blit.c`; no silicon run bounds it.
+
+### F: compressed write
+
+`ZB_BW_CNTL` gains `WR_COMP_ENABLE` on top of E's pair, which is the
+group `r300_update_hyperz` emits under `zmask_in_use`. A passing fragment
+now writes a compressed tile back and the ZMASK stops being read-only, so
+a defect here changes depth memory, which the depth oracle reads
+directly.
+
+Stage F is where `R300_ZCOMP_8X8` first becomes admissible, and the
+admission is explicit: `r300_zmask_clear_plan_build_at_block` takes the
+block as an argument, `r300_zmask_clear_stage_admits_block` admits 8x8 at
+stage F alone, and the builder refuses a layout resolved at the block it
+was not asked for, so `GB_Z_PEQ_CONFIG` and the `3D_CLEAR_ZMASK` coverage
+cannot come apart. The 4x4-versus-8x8 conflict recorded under stage C
+stays unsettled: the R5xx acceleration guide's 4x4 rule is stated for
+disabled compression and says nothing about this configuration, in-tree
+`r300_update_hyperz` programs 8x8 from `tex.zcomp8x8[level]`, and no
+retained silicon observation adjudicates either. Stage F therefore pins
+4x4 by default and carries 8x8 only under an explicit request.
+
+## Evidence classes
+
+Three classes separate what a run can demonstrate about the ZMASK. A
+class names an observation no lower class explains, so a run that reaches
+a class carries evidence for that class and states nothing about the one
+above it.
+
+| Class | Stage that reaches it | The observation it explains | What it leaves open |
+| --- | --- | --- | --- |
+| fast-clear metadata substitution | D | a zeroed tile answers depth reads with `ZB_DEPTHCLEARVALUE` in place of the word depth memory holds | whether any tile is ever compressed |
+| compressed read of a non-clear tile | E | a tile the metadata calls compressed decompresses to contents a uniform clear cannot produce | whether the pipe can produce such a tile |
+| compressed write producing nonuniform contents | F | a passing fragment writes a compressed tile back, so depth memory and the metadata both change | the intra-tile compressed encoding |
+
+`r300_zmask_clear_stage_evidence_class` carries the mapping in source and
+answers false for stages A through C, which enable no ZMASK read at all.
+
+The classes serve an API contract as well as a hardware one, and the two
+authorities answer different questions. Vulkan Resource Creation, Image
+Layouts states that images are stored in implementation-dependent opaque
+layouts in memory, so a compressed ZMASK representation is admissible
+storage for the same logical image. Vulkan Synchronization and Cache
+Control, Image Layout Transitions states that a transition happens as
+part of a memory dependency and that an old layout matching the current
+layout preserves the contents of the range, so the compressed
+representation must survive synchronization, update, switching, and
+transfer as the same logical image, and the materialized bytes are the
+bridge back to the ordinary uncompressed model. The register facts keep
+their AMD Radeon R5xx Acceleration and AMD R3xx 3D register reference
+citations; neither authority substitutes for the other.
+
+## Compressed-content qualification sequence
+
+Reaching stage F establishes the register configuration; it does not
+establish that the metadata carries anything but the zeros stage C wrote.
+The sequence below is what separates the two, and
+`r300_zmask_compressed_qualification.c` carries it as data a harness
+consumes step by step. Every row is a source-derived model from
+`r300_update_hyperz`, the fast-clear notes in `r300_blit.c`, and the
+ladder's own stage table; no silicon run bounds any of it.
+
+| Step | Stage | What it removes |
+| --- | --- | --- |
+| nonuniform ordinary initialization | A | a uniform image that any clear value reproduces |
+| compressed-write draw that cannot remain a uniform clear | F | the fast-clear substitution explaining the contents |
+| switch away and return | A | contents living in a cache that never retired |
+| compressed read under the decompression group | E | the written tiles being readable only under the group that wrote them |
+| materialize every compressed tile to depth memory | E | contents reachable only while the metadata is bound |
+| return `ZB_BW_CNTL` to zero | C | the metadata answering the verifying read |
+| read back through the qualified tiled address resolver | A | an address model that reads the wrong words |
+| compare to an independent oracle | A | the ZB path grading its own output |
+
+The discriminator requirement is the rule the descriptor enforces. A plan
+is evidence only when it carries a step whose observation the fast-clear
+substitution cannot produce, and
+`r300_zmask_qualification_plan_check` refuses a plan carrying none,
+however many steps it runs. The shipped sequence carries two: the
+compressed-write draw, whose varying depth is not the cleared state
+whatever the metadata says, and the oracle comparison, which grades the
+materialized bytes against a value the ZB never produced after the
+disable step removed the metadata from that read.
+
+The sequence is also the prerequisite the ZMASK_COMPRESSED materializer
+consumes. `r3v_native_depth_clear.c` refuses to materialize a compressed
+representation, and the refusal stands until a plan reaching the
+compressed-write class carries a run:
+`r300_zmask_qualification_materialize_admitted` is what reads that,
+and it answers false for a plan reaching only the fast-clear or the
+compressed-read class, because those leave the intra-tile compressed
+encoding unqualified.
+
+The resolver the verification reads through is the tiled address model,
+which is itself a labeled hypothesis until measured; the ZMASK
+qualification therefore stands behind the address-model measurement
+described under the Z24 control cell above, and a run of this sequence
+before that measurement lands verifies against an address model no
+observation supports.
+
+## Past F
+
+HiZ is the step past this ladder, and it is unreachable on this part:
+`hiz_ram` is 0 for `CHIP_RS480`, so HiZ has no RAM here. The step exists
+for the discrete R3xx and R5xx parts that carry HiZ RAM.
+
+Each stage keeps the ownership requirement stages C and D establish, and
 each is measured against A by the same two oracles.
 
 ## Automatic selection

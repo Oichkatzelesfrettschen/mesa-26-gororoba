@@ -45,6 +45,7 @@ r300_common_contract_files = files(
   'r300_zb_depth_surface.c',
   'r300_zb_hyperz_admission.c',
   'r300_zmask_clear_plan.c',
+  'r300_zmask_compressed_qualification.c',
   'r300_zmask_materialize_plan.c',
   'r300_zmask_layout.c',
 )
@@ -1426,6 +1427,26 @@ r300_zmask_clear_plan_test = executable(
 test(
   'r300-zmask-clear-plan',
   r300_zmask_clear_plan_test,
+  suite : ['r300'],
+)
+# The compressed-content qualification sequence: the shipped plan's steps
+# and their order, and the refusal of a plan carrying no discriminator.
+r300_zmask_compressed_qualification_test = executable(
+  'r300_zmask_compressed_qualification_test',
+  files('r300_pm4_builder.c', 'r300_zb_hyperz_admission.c',
+        'r300_zb_depth_layout.c', 'r300_zb_depth_surface.c',
+        'r300_zmask_layout.c', 'r300_zmask_clear_plan.c',
+        'r300_zmask_compressed_qualification.c',
+        'tests/r300_zmask_compressed_qualification_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test(
+  'r300-zmask-compressed-qualification',
+  r300_zmask_compressed_qualification_test,
   suite : ['r300'],
 )
 r300_zmask_materialize_plan_test = executable(
