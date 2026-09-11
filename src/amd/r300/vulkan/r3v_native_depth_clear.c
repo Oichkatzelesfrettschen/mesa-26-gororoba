@@ -400,15 +400,6 @@ r3v_native_record_zmask_materialize(VkCommandBuffer command_buffer,
 
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
-   if (!device->zmask_materialize_scratch_initialized ||
-       device->zmask_materialize_vertex.bo.handle == 0u ||
-       device->zmask_materialize_vertex.bo.size <
-          R3V_NATIVE_MEMORY_ALIGNMENT ||
-       device->zmask_materialize_color.bo.handle == 0u ||
-       device->zmask_materialize_color.bo.size <
-          R300_ZB_DEPTH_CONTROL_COLOR_BYTES)
-      return VK_ERROR_INITIALIZATION_FAILED;
-
    struct r3v_native_cmd_image_state *state =
       r3v_native_cmd_buffer_find_image_state(cmd_buffer, image);
    const enum r3v_native_image_representation representation =
@@ -423,11 +414,22 @@ r3v_native_record_zmask_materialize(VkCommandBuffer command_buffer,
                          : image->committed_submission.zmask_metadata;
    if (source_metadata == NULL || representation != source_representation ||
        !r3v_native_zmask_metadata_equal(&metadata, source_metadata) ||
-       (representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR &&
-        representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED) ||
-       (metadata.status != R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR &&
-        metadata.status != R3V_NATIVE_ZMASK_METADATA_COMPRESSED) ||
-       metadata.generation == 0u)
+       !r3v_native_zmask_metadata_valid(&metadata))
+      return VK_ERROR_INITIALIZATION_FAILED;
+   if (representation == R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_COMPRESSED &&
+       metadata.status == R3V_NATIVE_ZMASK_METADATA_COMPRESSED)
+      return VK_ERROR_FEATURE_NOT_PRESENT;
+   if (representation != R3V_NATIVE_IMAGE_REPRESENTATION_ZMASK_FAST_CLEAR ||
+       metadata.status != R3V_NATIVE_ZMASK_METADATA_FAST_CLEAR)
+      return VK_ERROR_INITIALIZATION_FAILED;
+
+   if (!device->zmask_materialize_scratch_initialized ||
+       device->zmask_materialize_vertex.bo.handle == 0u ||
+       device->zmask_materialize_vertex.bo.size <
+          R3V_NATIVE_MEMORY_ALIGNMENT ||
+       device->zmask_materialize_color.bo.handle == 0u ||
+       device->zmask_materialize_color.bo.size <
+          R300_ZB_DEPTH_CONTROL_COLOR_BYTES)
       return VK_ERROR_INITIALIZATION_FAILED;
 
    struct r300_zmask_materialize_plan plan;

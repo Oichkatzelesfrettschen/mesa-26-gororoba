@@ -214,7 +214,7 @@ r3v_native_cmd_buffer_append_image_state(
    return VK_SUCCESS;
 }
 
-static bool
+bool
 r3v_native_zmask_metadata_valid(
    const struct r3v_native_zmask_metadata_state *metadata)
 {
