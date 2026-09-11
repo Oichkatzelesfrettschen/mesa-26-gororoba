@@ -3,7 +3,7 @@
 pkgname=mesa-gororoba-debug-o0
 epoch=2
 pkgver=26.2.0
-pkgrel=4
+pkgrel=5
 pkgdesc='Mesa r300/R3V stock system replacement (debug, x86-64 baseline)'
 _variant=debug
 _profile=2_r300_full_debug_o0_x86_64v1-clang22-distcc-cache
@@ -14,7 +14,7 @@ source=("mesa-source::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goro
         '90-mesa-gororoba-r300.conf'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            'dcc56f09061920cf8922cdae6683ac92893f905d76a19ee92acbc7489b3a04d1'
+            'd1bfd239b506fa564b2418ee36a97a50d8ace6d8fe7e4eda2e16d60791195dfc'
             '141ea65ad167acf97152f8353935580d20fdb474f2c4a594c38f1864ba0fe0dd'
             '36d6b0bd829ad2af900e8f0144e1056cbd417f7fef834de6a30db29775b7f513'
             '098ae9caee036317b88342a4d3bc0140a8be86af615c148b866f502ea186c254'
