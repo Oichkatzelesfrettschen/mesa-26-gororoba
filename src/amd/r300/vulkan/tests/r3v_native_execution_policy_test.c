@@ -24,6 +24,8 @@
  * the environment the process started the device with.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -121,8 +123,8 @@ fill_submit(unsigned command_buffers, bool *filled_out,
    const VkMemoryAllocateInfo allocate_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = requirements.size,
-      /* Type 0 is the one host-visible native type. */
-      .memoryTypeIndex = 0,
+      /* The allocation uses the host-visible native type. */
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkDeviceMemory memory;
    REQUIRE(vkAllocateMemory(device, &allocate_info, NULL, &memory) ==

@@ -8,6 +8,8 @@
  * transport.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <errno.h>
 #include <math.h>
 #include <signal.h>
@@ -117,7 +119,7 @@ create_staging(const struct fixture *f, VkDeviceSize bytes,
    const VkMemoryAllocateInfo allocate_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = (bytes + 4095) & ~(VkDeviceSize)4095,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    REQUIRE(vkAllocateMemory(f->device, &allocate_info, NULL,
                             &out->memory) == VK_SUCCESS,
@@ -284,7 +286,7 @@ create_transfer_image_format(const struct fixture *f, uint32_t width,
    const VkMemoryAllocateInfo allocate_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = requirements.size,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    REQUIRE(vkAllocateMemory(f->device, &allocate_info, NULL,
                             &out->memory) == VK_SUCCESS,
@@ -348,7 +350,7 @@ create_transfer_image_optimal(const struct fixture *f, uint32_t width,
    const VkMemoryAllocateInfo allocate_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = requirements.size,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    REQUIRE(vkAllocateMemory(f->device, &allocate_info, NULL,
                             &out->memory) == VK_SUCCESS,
@@ -1349,7 +1351,7 @@ check_depth_image_copy_recording(const struct fixture *f,
    const VkMemoryAllocateInfo allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = allocation_size,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    REQUIRE(vkAllocateMemory(f->device, &allocation, NULL,
                             &destination_memory) == VK_SUCCESS,
@@ -1843,7 +1845,7 @@ check_depth_image_copy_recording(const struct fixture *f,
    const VkMemoryAllocateInfo smaller_allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = smaller_requirements.size,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    REQUIRE(vkAllocateMemory(f->device, &smaller_allocation, NULL,
                             &smaller_memory) == VK_SUCCESS,
@@ -1968,7 +1970,7 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
    VkDeviceMemory memory = VK_NULL_HANDLE;
    const VkMemoryAllocateInfo allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .allocationSize = requirements.size + 4096, .memoryTypeIndex = 0,
+      .allocationSize = requirements.size + 4096, .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    REQUIRE(vkAllocateMemory(f->device, &allocation, NULL, &memory) == VK_SUCCESS,
            "depth backing allocation");
@@ -2180,7 +2182,7 @@ check_depth_storage(const struct fixture *f, bool refuse_platform)
    const VkMemoryAllocateInfo shared_allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = 65536u,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkDeviceMemory shared_memory = VK_NULL_HANDLE;
    REQUIRE(vkAllocateMemory(f->device, &shared_allocation, NULL,

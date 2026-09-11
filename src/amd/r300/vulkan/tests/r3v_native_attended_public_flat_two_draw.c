@@ -26,6 +26,8 @@
  * every stage prints and flushes before it runs.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_post_vs_lowering.h"
 #include "r3v_shader_interface.h"
@@ -416,7 +418,7 @@ main(int argc, char **argv)
          &(VkMemoryAllocateInfo){
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = reqs.size,
-            .memoryTypeIndex = 0,
+            .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
          },
          NULL, &target[i].memory));
       CHECK(vkBindImageMemory(device, target[i].image, target[i].memory, 0));
@@ -475,7 +477,7 @@ main(int argc, char **argv)
                           &(VkMemoryAllocateInfo){
                              .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                              .allocationSize = 4096,
-                             .memoryTypeIndex = 0,
+                             .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                           },
                           NULL, &vertex_memory));
    CHECK(vkCreateBuffer(device,

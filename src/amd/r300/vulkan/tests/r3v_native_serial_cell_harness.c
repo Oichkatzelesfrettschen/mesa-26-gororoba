@@ -12,6 +12,8 @@
  * buffer.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <dlfcn.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -249,7 +251,7 @@ main(void)
    VkMemoryAllocateInfo allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = carrier_bytes,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkDeviceMemory carrier_memory = VK_NULL_HANDLE;
    VkDeviceMemory vertex_memory = VK_NULL_HANDLE;

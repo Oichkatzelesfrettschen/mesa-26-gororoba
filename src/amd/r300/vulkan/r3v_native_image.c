@@ -346,8 +346,8 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
 {
    VK_FROM_HANDLE(r3v_native_image, image, _image);
 
-   /* Type 0 alone: the draw's load-op clear executes through a CPU
-    * mapping of the bound allocation, and type 1 allocates with
+   /* The host-visible type alone supports the draw's load-op clear
+    * through a CPU mapping; the device-only type allocates with
     * RADEON_GEM_NO_CPU_ACCESS, so an allocation the requirement admits
     * is always one the clear can map.
     */
@@ -355,7 +355,7 @@ r3v_GetImageMemoryRequirements(VkDevice _device, VkImage _image,
       .size = image->depth_family ? image->depth_contract.binding_bytes
                                   : image->footprint_bytes,
       .alignment = R3V_NATIVE_MEMORY_ALIGNMENT,
-      .memoryTypeBits = 0x1,
+      .memoryTypeBits = R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS,
    };
 }
 
@@ -421,7 +421,7 @@ r3v_GetImageSparseMemoryRequirements2(VkDevice _device,
  * memory_offset src/amd/r300/vulkan/)`.  Binding happens exactly once
  * per image, to the one host-visible type the requirement admits: the
  * load-op clear and the host copies execute through a CPU mapping, and
- * type 1 allocates with RADEON_GEM_NO_CPU_ACCESS.
+ * the device-only type allocates with RADEON_GEM_NO_CPU_ACCESS.
  */
 VKAPI_ATTR VkResult VKAPI_CALL
 r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
@@ -434,7 +434,7 @@ r3v_BindImageMemory(VkDevice _device, VkImage _image, VkDeviceMemory _memory,
    const uint64_t footprint = image != NULL ? image->footprint_bytes
          : 0;
    if (image == NULL || memory == NULL || image->memory != NULL ||
-       memory->vk.memory_type_index != 0 ||
+       memory->vk.memory_type_index != R3V_NATIVE_MEMORY_HOST_VISIBLE ||
        memoryOffset % R3V_NATIVE_MEMORY_ALIGNMENT != 0 ||
        /* The render cell places the last layer's base in
         * RB3D_COLOROFFSET0, so the bind offset plus that layer's stride

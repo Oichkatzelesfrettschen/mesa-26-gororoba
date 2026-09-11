@@ -4860,7 +4860,7 @@ r3v_native_record_multi_pass(VkCommandBuffer commandBuffer,
  *
  * The multisample surface is the recording's own allocation in
  * RADEON_GEM_DOMAIN_VRAM with no fallback domain and no CPU access, so
- * the create itself is the placement -- the memory-type policy's type 1
+ * the create itself is the placement; the device-only memory type
  * gives VRAM | GTT, under which a host-unmapped allocation proves
  * nothing about residency.  Its size carries the sample expansion
  * (r300_texture_desc.c multiplies the layer size and leaves the stride

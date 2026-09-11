@@ -14,6 +14,8 @@
  * stage prints and flushes before it runs.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 #include "r3v_native_msaa_arms.h"
@@ -304,7 +306,7 @@ main(int argc, char **argv)
          &(VkMemoryAllocateInfo){
             .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
             .allocationSize = MSAA_ALLOCATION_BYTES,
-            .memoryTypeIndex = 0,
+            .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
          },
          NULL, &memory[i]));
    }

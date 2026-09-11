@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 
@@ -623,7 +625,7 @@ run_hardware(const char *evidence_directory,
    const VkMemoryAllocateInfo allocation = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = QUALIFICATION_BYTES,
-      .memoryTypeIndex = 0u,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    if (vkAllocateMemory(device, &allocation, NULL, &source) != VK_SUCCESS ||
        vkAllocateMemory(device, &allocation, NULL, &destination) != VK_SUCCESS ||

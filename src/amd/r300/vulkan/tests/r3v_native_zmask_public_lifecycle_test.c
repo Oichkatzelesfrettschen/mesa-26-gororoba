@@ -5,6 +5,8 @@
  * the compiled test translation unit. */
 int r3v_native_attended_public_zb_depth_fixture_main(int argc, char **argv);
 #define main r3v_native_attended_public_zb_depth_fixture_main
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native_attended_public_zb_depth.c"
 #undef main
 
@@ -349,7 +351,7 @@ create_readback(struct public_context *context, struct readback *readback)
       &(VkMemoryAllocateInfo){
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
          .allocationSize = READBACK_BYTES,
-         .memoryTypeIndex = 0u,
+         .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
       },
       NULL, &readback->memory);
    return result == VK_SUCCESS &&

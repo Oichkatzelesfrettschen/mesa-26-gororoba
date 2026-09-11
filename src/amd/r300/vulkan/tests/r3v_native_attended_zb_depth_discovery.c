@@ -23,6 +23,8 @@
  * seed B.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 
@@ -325,7 +327,7 @@ main(int argc, char **argv)
                               .sType =
                                  VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                               .allocationSize = allocations[i].size,
-                              .memoryTypeIndex = 0,
+                              .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
                            },
                            NULL, &allocations[i].memory) != VK_SUCCESS) {
          fprintf(stderr, "allocation %u failed\n", i);

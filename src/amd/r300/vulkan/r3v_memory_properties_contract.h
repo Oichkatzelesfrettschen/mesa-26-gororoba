@@ -13,6 +13,15 @@
 
 #include <vulkan/vulkan_core.h>
 
+enum r3v_native_memory_type {
+   R3V_NATIVE_MEMORY_DEVICE_LOCAL = 0,
+   R3V_NATIVE_MEMORY_HOST_VISIBLE = 1,
+   R3V_NATIVE_MEMORY_TYPE_COUNT,
+};
+
+#define R3V_NATIVE_HOST_VISIBLE_MEMORY_BITS \
+   (1u << R3V_NATIVE_MEMORY_HOST_VISIBLE)
+
 /* The kernel's radeon_gem_info_ioctl() is the authority for the runtime
  * capacity input.  Its `vram_size` field reads the TTM VRAM manager and its
  * `gart_size` field reads the effective rdev->mc.gtt_size after pinned GART
@@ -47,6 +56,7 @@ enum r3v_memory_properties_verdict {
    R3V_MEMORY_PROPERTIES_DEVICE_LOCAL_TYPE_ON_HOST_HEAP,
    R3V_MEMORY_PROPERTIES_HOST_PROPERTY_WITHOUT_HOST_VISIBLE,
    R3V_MEMORY_PROPERTIES_NO_HOST_VISIBLE_TYPE,
+   R3V_MEMORY_PROPERTIES_TYPE_SUBSET_ORDER,
 };
 
 /* Vulkan binds a memory type to a heap by index, requires a DEVICE_LOCAL
@@ -97,14 +107,29 @@ r3v_memory_properties_check(const VkPhysicalDeviceMemoryProperties *m,
    if (!host_visible_present)
       return R3V_MEMORY_PROPERTIES_NO_HOST_VISIBLE_TYPE;
 
+   /* Vulkan Device Memory orders each strict flag subset before its
+    * superset, independently of the heap indices.
+    */
+   for (uint32_t earlier = 0; earlier < m->memoryTypeCount; earlier++) {
+      const VkMemoryPropertyFlags earlier_flags =
+         m->memoryTypes[earlier].propertyFlags;
+      for (uint32_t later = earlier + 1; later < m->memoryTypeCount; later++) {
+         const VkMemoryPropertyFlags later_flags =
+            m->memoryTypes[later].propertyFlags;
+         if (earlier_flags != later_flags &&
+             (earlier_flags & later_flags) == later_flags)
+            return R3V_MEMORY_PROPERTIES_TYPE_SUBSET_ORDER;
+      }
+   }
+
    return R3V_MEMORY_PROPERTIES_OK;
 }
 
 /* The native lane reports one budget: RS480-family UMA draws the GTT
  * aperture and the firmware-selected IGP VRAM interval from the same system
- * memory, so a single DEVICE_LOCAL heap carries both kernel pools.  Type 0
- * is the GTT|CPU_ACCESS placement r3v_native_memory_type_policy allocates and
- * type 1 is the VRAM|GTT NO_CPU_ACCESS placement, which stays off the host
+ * memory, so a single DEVICE_LOCAL heap carries both kernel pools. The
+ * host-visible type uses GTT|CPU_ACCESS placement, and the device-only
+ * type uses VRAM|GTT NO_CPU_ACCESS placement, which stays off the host
  * side because no CPU mapping of that range exists.  The GTT mapping is
  * cached and the aperture unsnooped: radeon_bo_create strips
  * RADEON_GEM_GTT_WC and RADEON_GEM_GTT_UC on every non-PCIE device, so the
@@ -133,15 +158,15 @@ r3v_native_memory_properties_fill(VkPhysicalDeviceMemoryProperties *m,
       .size = heap_bytes,
       .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
    };
-   m->memoryTypeCount = 2;
-   m->memoryTypes[0] = (VkMemoryType){
+   m->memoryTypeCount = R3V_NATIVE_MEMORY_TYPE_COUNT;
+   m->memoryTypes[R3V_NATIVE_MEMORY_HOST_VISIBLE] = (VkMemoryType){
       .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                        VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .heapIndex = 0,
    };
-   m->memoryTypes[1] = (VkMemoryType){
+   m->memoryTypes[R3V_NATIVE_MEMORY_DEVICE_LOCAL] = (VkMemoryType){
       .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .heapIndex = 0,
    };

@@ -19,6 +19,8 @@
  * geometry is the only arming factor that fails.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include <dlfcn.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -350,7 +352,7 @@ main(int argc, char **argv)
    VkMemoryAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = carrier_bytes,
-      .memoryTypeIndex = 0,
+      .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE,
    };
    VkCommandPool pool = VK_NULL_HANDLE;
    VkCommandBuffer cmd = VK_NULL_HANDLE;

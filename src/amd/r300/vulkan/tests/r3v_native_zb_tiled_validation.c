@@ -7,6 +7,8 @@
  * surfaces before classifying logical color and raw depth separately.
  */
 
+#include "../r3v_memory_properties_contract.h"
+
 #include "r3v_native.h"
 #include "r3v_native_arming.h"
 
@@ -603,7 +605,7 @@ run_persistence(const char *evidence_dir, bool prepare)
    for (unsigned index = 0; index < 4; index++) {
       result = allocate_memory(device, &(VkMemoryAllocateInfo){
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-         .allocationSize = allocations[index].size, .memoryTypeIndex = 0},
+         .allocationSize = allocations[index].size, .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE},
          NULL, &allocations[index].memory);
       if (result != VK_SUCCESS)
          return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -859,7 +861,7 @@ main(int argc, char **argv)
    for (unsigned index = 0; index < 3; index++) {
       result = vkAllocateMemory(device, &(VkMemoryAllocateInfo){
          .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-         .allocationSize = memory[index].size, .memoryTypeIndex = 0},
+         .allocationSize = memory[index].size, .memoryTypeIndex = R3V_NATIVE_MEMORY_HOST_VISIBLE},
          NULL, &memory[index].memory);
       if (result != VK_SUCCESS)
          return finish(OUTCOME_SUBMISSION_REFUSED);
