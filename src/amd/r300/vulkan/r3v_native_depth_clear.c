@@ -703,9 +703,13 @@ r3v_native_record_zmask_initialize_state(
        resulting_metadata.generation == 0u)
       return VK_ERROR_INITIALIZATION_FAILED;
 
+   /* The block the image resolved, so the RAM this bind clears is sized
+    * for the plane equations every later draw on this image decodes. */
    struct r300_zmask_clear_plan plan;
-   if (r300_zmask_clear_plan_build(R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
-                                   &image->zmask_layout, &plan) != 0)
+   if (r300_zmask_clear_plan_build_at_block(
+          R300_ZMASK_CLEAR_STAGE_BIND_CLEAR,
+          image->zmask_layout.zcomp8x8 ? R300_ZCOMP_8X8 : R300_ZCOMP_4X4,
+          &image->zmask_layout, &plan) != 0)
       return VK_ERROR_INITIALIZATION_FAILED;
    if (r3v_native_cmd_buffer_reserve_ordered_operations(cmd_buffer, 1u) !=
        VK_SUCCESS)
@@ -1086,15 +1090,23 @@ r3v_native_zmask_exact_image_contract(const struct r3v_native_image *image)
           image->depth_contract.layout.bytes_per_pixel == 4u;
 }
 
+/* The one ZMASK layout the qualified route admits: the 64x64 Z24
+ * macrotiled single-sample level on one RS480 pipe at the 8x8 block its
+ * macrotiling admits, four metadata dwords over a 5120-dword RAM.  The
+ * block is the level's own, so GB_Z_PEQ_CONFIG and the 3D_CLEAR_ZMASK
+ * coverage agree with the plane equations the pipe decodes once
+ * ZB_BW_CNTL carries RD_COMP_ENABLE.
+ */
 static bool
 r3v_native_zmask_exact_layout(const struct r3v_native_image *image)
 {
    return image != NULL && image->zmask_layout_admitted &&
           image->zmask_layout.fits_zmask_ram &&
           image->zmask_layout.stride_in_pixels == 64u &&
-          image->zmask_layout.dwords == 16u &&
+          image->zmask_layout.dwords == 4u &&
           image->zmask_layout.zmask_ram_dwords == 5120u &&
-          !image->zmask_layout.zcomp8x8;
+          image->zmask_layout.zcomp8x8 &&
+          image->zmask_layout.admits_zcomp8x8;
 }
 
 static bool

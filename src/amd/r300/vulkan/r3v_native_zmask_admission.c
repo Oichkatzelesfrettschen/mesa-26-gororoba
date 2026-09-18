@@ -379,10 +379,12 @@ r3v_native_zmask_promotion_complete(
 const struct r3v_native_zmask_promotion_record *
 r3v_native_zmask_promotion_retained(void)
 {
-   /* Every requirement stands outstanding: the lifecycle qualification is
-    * an offline prediction and no silicon run has retained a result
-    * against it.  The absent record is what holds automatic selection
-    * closed at the device. */
+   /* Every requirement stands outstanding.  RS485M has executed the
+    * lifecycle stream and retained none of them: the fast-clear
+    * substitution the first requirement names did not occur, because
+    * that stream paired 4x4 plane equations with compression reads over
+    * a macrotiled level.  The absent record is what holds automatic
+    * selection closed at the device. */
    return NULL;
 }
 

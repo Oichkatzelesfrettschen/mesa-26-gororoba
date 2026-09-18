@@ -35,12 +35,50 @@
    (EXPORT_GUARD_BYTES + STENCIL_EXPORT_BYTES + EXPORT_GUARD_BYTES)
 #define VERTEX_BYTES 4096u
 #define DEPTH_BACKING_BASE 2048u
+/* Depth codes the lifecycle programs, and the clear depths that reach
+ * them.  r3v_native_depth_clear converts a VkClearDepthStencilValue with
+ * value * 16777215.0 + 0.5, so each float below names exactly one code
+ * and the oracle and the recorded clear cannot drift apart.
+ */
 #define BACKING_DEPTH_CODE 0x200000u
+#define READ_CLEAR_DEPTH 0.5f
 #define READ_CLEAR_DEPTH_CODE 0x800000u
+#define IMAGE_B_CLEAR_DEPTH 0.75f
 #define IMAGE_B_CLEAR_DEPTH_CODE 0xbfffffu
 #define UPDATE_DEPTH_CODE 0x400000u
+
+/* The stencil the backing carries and the distinct stencil the combined
+ * clear writes.  A clear stencil equal to the backing stencil leaves
+ * "the clear wrote the stencil" and "the stencil was never touched"
+ * producing the same byte, so the two differ and the exported stencil
+ * names which happened.  The clear call passes the high bit pattern the
+ * 8-bit stencil field truncates.
+ */
 #define BACKING_STENCIL 0x5au
+#define READ_CLEAR_STENCIL 0x3cu
+#define READ_CLEAR_STENCIL_ARGUMENT 0x13cu
 #define IMAGE_B_CLEAR_STENCIL 0xa5u
+#define IMAGE_B_CLEAR_STENCIL_ARGUMENT 0x1a5u
+
+/* The oracle separates models by the value depth memory holds, so the
+ * backing, the clear, the update and the materialization quad each name
+ * a distinct code; two equal codes collapse two models into one reading.
+ * The stencil pair carries the same obligation.  The quad's own code is
+ * R300_ZMASK_MATERIALIZE_Z scaled, which a substituted read replaces
+ * with the clear code and a fill leaves in place.
+ */
+_Static_assert(BACKING_DEPTH_CODE != READ_CLEAR_DEPTH_CODE &&
+                  BACKING_DEPTH_CODE != UPDATE_DEPTH_CODE &&
+                  READ_CLEAR_DEPTH_CODE != UPDATE_DEPTH_CODE,
+               "lifecycle depth codes separate the models");
+_Static_assert(BACKING_STENCIL != READ_CLEAR_STENCIL &&
+                  BACKING_STENCIL != IMAGE_B_CLEAR_STENCIL &&
+                  READ_CLEAR_STENCIL != IMAGE_B_CLEAR_STENCIL,
+               "lifecycle stencils separate clear from preservation");
+_Static_assert((READ_CLEAR_STENCIL_ARGUMENT & 0xffu) == READ_CLEAR_STENCIL &&
+                  (IMAGE_B_CLEAR_STENCIL_ARGUMENT & 0xffu) ==
+                     IMAGE_B_CLEAR_STENCIL,
+               "the clear argument truncates to the oracle's stencil");
 #define UPDATE_WIDTH 16u
 #define UPDATE_HEIGHT 20u
 #define BACKING_GUARD 0xa3u
@@ -994,7 +1032,8 @@ record_application(struct application *application, enum application_mode mode)
       return false;
 
    record_fast_clear(application->command_buffer,
-                     application->depth[0].image, 0.5f, 0x15au);
+                     application->depth[0].image, READ_CLEAR_DEPTH,
+                     READ_CLEAR_STENCIL_ARGUMENT);
    if (mode == MODE_READ_MATERIALIZE_EXPORT) {
       record_draw(application, TARGET_WIDTH, TARGET_HEIGHT,
                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
@@ -1007,7 +1046,8 @@ record_application(struct application *application, enum application_mode mode)
          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
    } else {
       record_fast_clear(application->command_buffer,
-                        application->depth[1].image, 0.75f, 0x1a5u);
+                        application->depth[1].image, IMAGE_B_CLEAR_DEPTH,
+                        IMAGE_B_CLEAR_STENCIL_ARGUMENT);
       record_draw(application, TARGET_WIDTH, TARGET_HEIGHT,
                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -1170,12 +1210,12 @@ validate_oracle_discriminators(void)
    for (uint32_t index = 0u; index < PIXEL_COUNT; index++) {
       memcpy(depth_bytes + EXPORT_GUARD_BYTES + index * sizeof(uint32_t),
              &(uint32_t){READ_CLEAR_DEPTH_CODE}, sizeof(uint32_t));
-      stencil_bytes[EXPORT_GUARD_BYTES + index] = BACKING_STENCIL;
+      stencil_bytes[EXPORT_GUARD_BYTES + index] = READ_CLEAR_STENCIL;
    }
    if (!exported_depth_matches(depth_bytes + EXPORT_GUARD_BYTES,
                                READ_CLEAR_DEPTH_CODE, false, NULL) ||
        !exported_stencil_matches(stencil_bytes + EXPORT_GUARD_BYTES,
-                                 BACKING_STENCIL) ||
+                                 READ_CLEAR_STENCIL) ||
        !export_guards_match(depth_bytes, DEPTH_EXPORT_BYTES) ||
        !export_guards_match(stencil_bytes, STENCIL_EXPORT_BYTES))
       return false;
@@ -1887,7 +1927,7 @@ main(int argc, char **argv)
       retained &= retain_observed_target(
          &application, 0u, directory_descriptor, "read-final-backing.bin",
          "read-exported-depth.bin", "read-exported-stencil.bin",
-         READ_CLEAR_DEPTH_CODE, BACKING_STENCIL, false,
+         READ_CLEAR_DEPTH_CODE, READ_CLEAR_STENCIL, false,
          &oracles.read_final_backing, &oracles.read_exported_depth,
          &oracles.read_exported_stencil, &oracles.read_export_guards, NULL,
          NULL);
@@ -1900,7 +1940,7 @@ main(int argc, char **argv)
          &application, 0u, directory_descriptor,
          "aba-a-final-backing.bin", "aba-a-exported-depth.bin",
          "aba-a-exported-stencil.bin", READ_CLEAR_DEPTH_CODE,
-         BACKING_STENCIL, true, &oracles.aba_a_final_backing,
+         READ_CLEAR_STENCIL, true, &oracles.aba_a_final_backing,
          &oracles.aba_a_exported_depth, &oracles.aba_a_exported_stencil,
          &oracles.aba_a_export_guards, &a_backing_updates, &a_depth_updates);
       retained &= retain_observed_target(

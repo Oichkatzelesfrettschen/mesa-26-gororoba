@@ -18,7 +18,14 @@ validate_inputs(const struct r300_zb_depth_surface *surface,
        !surface->microtile || !surface->macrotile ||
        !layout->fits_zmask_ram || layout->dwords == 0u ||
        layout->stride_in_pixels == 0u || layout->zmask_ram_dwords == 0u ||
-       layout->dwords > layout->zmask_ram_dwords || layout->zcomp8x8)
+       layout->dwords > layout->zmask_ram_dwords)
+      return -EINVAL;
+   /* The prefix sets RD_COMP_ENABLE, so the tile lookup runs through the
+    * plane equations the pipe decodes at the level's own block.  A
+    * layout pinned below that block addresses a quarter of the tiles and
+    * the remainder answer out of depth memory, which is the pairing
+    * RS485M executed with 4x4 equations over a macrotiled 64x64 level. */
+   if (r300_zmask_layout_below_admitted_block(layout))
       return -EINVAL;
    return 0;
 }
@@ -43,8 +50,12 @@ r300_zmask_materialize_prefix(
    r300_pm4_reg(&builder, R300_ZB_DEPTHCLEARVALUE, plan.clear_word);
    r300_pm4_packet0(&builder, R300_ZB_ZMASK_OFFSET,
                     (uint32_t[]){0u, layout->stride_in_pixels}, 2u);
+   /* The same block the clear covered, read off one layout, so the
+    * equations this prefix programs address exactly the metadata the
+    * 3D_CLEAR_ZMASK payload wrote. */
    r300_pm4_reg(&builder, R300_GB_Z_PEQ_CONFIG,
-                R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
+                layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
+                                 : R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
    r300_pm4_reg(&builder, R300_ZB_BW_CNTL,
                 R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE);
    if (r300_pm4_builder_finish(&builder, &plan.dword_count) != 0)

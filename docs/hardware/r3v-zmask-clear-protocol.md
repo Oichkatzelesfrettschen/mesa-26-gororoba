@@ -30,9 +30,10 @@ pixel area by the pixels one ZMASK dword covers.
 `r300_zmask_layout_compute_at_block` takes the block as an argument
 instead: `R300_ZCOMP_4X4` pins the smaller block whatever the level
 would have chosen, and `R300_ZCOMP_8X8` asks for the larger one and
-yields the level's own decision. Every stage consumes the 4x4 form by
-default, for the reason stated under stage C; stage F consumes the 8x8
-form under an explicit request, for the reason stated there. The result fits when
+yields the level's own decision. Every stage pins the 4x4 form for a
+caller that names no block; a stage that binds the ZMASK RAM admits the
+level's own block under an explicit request, and the streams the driver
+submits take it, for the reason stated under stage C. The result fits when
 the dword count stays within `zmask_ram * pipes`, which is 5120 on one
 RS480 pipe. A level that does not fit yields a zero pitch and a zero
 dword count, and the bind stages refuse to build for it, matching
@@ -165,31 +166,33 @@ the kernel's PACKET0 authority, which the Evidence section records.
 `SC_HYPERZ` stays unwritten: the scan converter's HiZ bit belongs to the
 HiZ stage past this ladder.
 
-The block this stage programs is `R300_ZCOMP_4X4`, whatever the level's
-own decision would be. The R5xx acceleration guide requires 4x4 plane
-equations while compression is disabled, so the GA and the ZB agree on
-the plane-equation format, and `ZB_BW_CNTL` = 0 leaves both
-`RD_COMP_ENABLE` and `WR_COMP_ENABLE` clear here and through stage D,
-whose `FAST_FILL_ENABLE` enables no compression either. So both binding
-stages answer `R300_ZCOMP_4X4` from
-`r300_zmask_clear_stage_block`, and the 64x64 macrotiled reference level
-binds sixteen dwords rather than the four its 8x8 decision would name.
-`r300_zmask_clear_plan_build` refuses a layout resolved at the other
-block, so the plane-equation register and the clear coverage cannot come
-apart.
+The block this stage programs is the one the layout carries.
+`r300_zmask_clear_stage_block` answers `R300_ZCOMP_4X4` for a caller
+that names no block, which is what the ladder walks its rungs at; the
+driver's own streams call `r300_zmask_clear_plan_build_at_block` with
+the level's own block instead, and the builder refuses a layout resolved
+at the other one, so the plane-equation register and the clear coverage
+cannot come apart.
 
-In-tree `r300_update_hyperz` disagrees: it sets `Z_PEQ_SIZE_8_8` from
-`tex.zcomp8x8[level]` whenever HyperZ is enabled, before deciding which
-enables `ZB_BW_CNTL` carries, so the Gallium path programs 8x8 plane
-equations in configurations where the guide asks for 4x4. The guide is
-the higher-ranked authority and decides the value the ladder emits. No
-retained silicon observation of either configuration exists, so the
-disagreement is a recorded conflict rather than a settled question, and
-stage F, which enables compressed writes, is where 8x8 first becomes
-admissible. `r300_zmask_clear_stage_admits_block` opens the larger block
-at stage F alone, and stage F still pins 4x4 for a caller that names no
-block, so the unsettled question stays out of every default stream and
-enters only where a caller states `R300_ZCOMP_8X8` explicitly.
+The block is a property of the ZMASK RAM rather than of a rung, so every
+stage that binds the RAM -- C through F -- admits both. The coverage
+stage C clears is read back by stages D, E and F through the plane
+equations the pipe decodes, and the pipe decodes them at the level's own
+block: `r300_update_hyperz` sets `Z_PEQ_SIZE_8_8` from
+`tex.zcomp8x8[level]` whenever HyperZ is enabled, before its
+`zmask_decompress` arm returns with `FAST_FILL_ENABLE | RD_COMP_ENABLE`.
+One stream therefore reaches one block whichever rung seeded the RAM.
+
+The R5xx acceleration guide's requirement of 4x4 plane equations holds
+where compression is disabled -- stages A and B, and the materialize
+suffix, which bind no ZMASK and leave `ZB_BW_CNTL` clear. RS485M
+executed the other pairing, 4x4 equations and a sixteen-dword clear
+under `FAST_FILL_ENABLE | RD_COMP_ENABLE` over a macrotiled 64x64 level,
+and every depth read answered out of depth memory; the Evidence section
+records that run. The guide's clause does not reach the
+compression-enabled configuration, and a layout pinned below the block
+its level admits is refused at every stage whose word sets
+`RD_COMP_ENABLE`.
 
 With every compression enable off, the depth pipe reads and writes
 depth memory as it did in A, so the expected observation against A is an
@@ -265,17 +268,13 @@ now writes a compressed tile back and the ZMASK stops being read-only, so
 a defect here changes depth memory, which the depth oracle reads
 directly.
 
-Stage F is where `R300_ZCOMP_8X8` first becomes admissible, and the
-admission is explicit: `r300_zmask_clear_plan_build_at_block` takes the
-block as an argument, `r300_zmask_clear_stage_admits_block` admits 8x8 at
-stage F alone, and the builder refuses a layout resolved at the block it
-was not asked for, so `GB_Z_PEQ_CONFIG` and the `3D_CLEAR_ZMASK` coverage
-cannot come apart. The 4x4-versus-8x8 conflict recorded under stage C
-stays unsettled: the R5xx acceleration guide's 4x4 rule is stated for
-disabled compression and says nothing about this configuration, in-tree
-`r300_update_hyperz` programs 8x8 from `tex.zcomp8x8[level]`, and no
-retained silicon observation adjudicates either. Stage F therefore pins
-4x4 by default and carries 8x8 only under an explicit request.
+Stage F carries the same block admission as every other binding stage:
+`r300_zmask_clear_plan_build_at_block` takes the block as an argument,
+and the builder refuses a layout resolved at the block it was not asked
+for, so `GB_Z_PEQ_CONFIG` and the `3D_CLEAR_ZMASK` coverage cannot come
+apart. Its `WR_COMP_ENABLE` puts a passing fragment's write through the
+same plane equations the read uses, so the block the stage programs is
+the level's own wherever the layout names it.
 
 ## Evidence classes
 
@@ -484,19 +483,157 @@ and skips the check entirely, which makes the safe list and the case
 labels disjoint. Both are read off the named kernel sources, not
 measured.
 
-### Hypothesis: the corrected stream admits
+### Known (silicon): the corrected stream admits and executes
 
-Removing the two writes leaves stage C writing `ZB_ZMASK_OFFSET`,
-`ZB_ZMASK_PITCH`, `GB_Z_PEQ_CONFIG`, `ZB_BW_CNTL`, and
-`3D_CLEAR_ZMASK`, every one of which lies in the union of the safe list
-and the case labels. The prediction is that the same submission reaches
-the ring: `DRM_RADEON_CS` returns 0 and `dmesg` carries no
-`Forbidden register` line and no `Invalid command stream` line for it.
-This is falsified by any further parser rejection, which would name a
-second register the model admits and the kernel does not. No run has
-tested it, so nothing here bounds what the stage then does to depth
-memory -- the ownership acquire and every stage observation stay
-unmeasured.
+The prediction recorded against the refused stream -- that removing the
+two index-port writes leaves only registers inside the union of
+`reg_srcs/r300` and the `r300_packet0_check` case labels, so the same
+submission reaches the ring -- was tested and held. On the same Dell
+Vostro 1000 RS485M, `DRM_RADEON_CS` accepted the stream, the HyperZ
+ownership acquire succeeded, execution completed, and the `dmesg` delta
+across the run was empty.
+
+| Field | Value |
+| --- | --- |
+| observation | `DRM_RADEON_CS` accepts; HyperZ ownership acquired; execution completes; `dmesg` delta empty |
+| source commit | mesa 70c80c52d2f package; kernel radeon-unified 0.8.19 on 7.1.8-1-cachyos |
+| retained bundle | `steinmarder-r300` `results/r3v-zmask-public-lifecycle-rs485m-70c80c52-silicon-3dbd5d275`, scenario `read-materialize-export` |
+| falsification criterion | a `Forbidden register` line, an `Invalid command stream` line, or a nonzero `DRM_RADEON_CS` return for the stream |
+| evidence class | known (silicon) |
+
+This is the first ZMASK stream this part has executed. It bounds the
+kernel path and nothing beyond it on its own; the depth observations
+below are what the executed stream then demonstrated.
+
+### Known (silicon): 4x4 plane equations over a macrotiled level substitute nothing
+
+The executed stream bound the ZMASK at `ZB_ZMASK_PITCH` 0x40, wrote
+`GB_Z_PEQ_CONFIG` 0 -- `Z_PEQ_SIZE_4_4` -- and cleared sixteen metadata
+dwords, the 4x4 coverage for the 64x64 level. Both application draws ran
+under `ZB_BW_CNTL` `FAST_FILL_ENABLE | RD_COMP_ENABLE` with `ZB_CNTL`
+`Z_ENABLE`, `ZB_ZSTENCILCNTL` LESS, and depth writes clear, comparing an
+incoming 0x400000 against a surface the fast clear had set to 0x800000.
+
+Every one of the 4096 pixels kept the color sentinel 0xa5a5a5a5: the
+depth test passed nowhere. The comparison that passes nowhere is
+0x400000 against the 0x200000 the backing held before the clear, so the
+depth reads answered out of depth memory rather than out of the cleared
+metadata. The metadata model predicted the opposite result, 0x400000
+against the clear code 0x800000 passing at every pixel, and that is the
+prediction the run refuted.
+
+| Field | Value |
+| --- | --- |
+| observation | observed color 0xa5a5a5a5 on all 4096 pixels; initial backing 0x2000005a; `GB_Z_PEQ_CONFIG` 0 with a sixteen-dword `3D_CLEAR_ZMASK` under `FAST_FILL_ENABLE \| RD_COMP_ENABLE` |
+| source constraint | `r300_update_hyperz` sets `Z_PEQ_SIZE_8_8` from `tex.zcomp8x8[level]` whenever HyperZ is enabled, before the `zmask_decompress` arm returns with `FAST_FILL_ENABLE \| RD_COMP_ENABLE`, so Gallium pairs 8x8 plane equations with compression reads on a macrotiled level |
+| refuted | the R5xx acceleration guide's 4x4 clause reaching a configuration that enables compression reads |
+| falsification criterion | the same 4x4 stream coloring any pixel, which would put the substitution somewhere other than the plane-equation format |
+| evidence class | known (silicon) |
+
+The level is macrotiled, single-sample and 32 bits per pixel on a
+`CHIP_RS480` part, so `r300_zmask_layout_compute` decides 8x8 for it and
+four dwords cover the surface. The stream programmed the other block at
+four times the coverage, and the tile lookup found nothing.
+
+### Known (silicon): the materialize step delivered the clear code
+
+Depth memory after the run read 0x8000005a at every pixel. The
+materialization draw is the only write-enabled operation after the two
+LESS draws -- `ZB_CNTL` `Z_WRITE_ENABLE` with the test off,
+`ZB_BW_CNTL` `FAST_FILL_ENABLE | RD_COMP_ENABLE` -- and the LESS draws
+establish that depth memory still held 0x200000 when they ran. The
+window-space depth its triangle carried was 0.0, whose code is 0x000000
+and which appears nowhere in the result. So the step wrote the fast-clear
+code rather than the fragment depth, and it wrote neither nothing nor the
+quad.
+
+The stencil byte survived at 0x5a across the whole run.
+
+The inference rests on that chain rather than on the final word alone.
+Depth memory holding the clear code is equally what a clear block writing
+memory directly would leave, so the reading stands only while the LESS
+draws place 0x200000 in the read path after the clear.
+
+| Field | Value |
+| --- | --- |
+| observation | final backing 0x8000005a on all 4096 pixels; 0x000000 absent; exported depth 0xa3800000 per pixel |
+| falsification criterion | 0x000000 in depth memory, which would name a fragment-depth fill; or any evidence that depth memory held 0x800000 before the LESS draws, which breaks the chain and puts the write before the materialize step |
+| evidence class | known (silicon) |
+
+The exported depth's upper byte is the readback guard fill. A
+`vkCmdCopyImageToBuffer` of the depth aspect of a `D24_UNORM_S8_UINT`
+image leaves the X8 bits undefined (Vulkan 1.0, Copy Commands, Buffer and
+Image Addressing), so the value is conformant and every in-tree oracle
+masks with `0x00ffffff` before comparing.
+
+### Validator defect: the run's stencil and update readings demonstrate nothing
+
+Two readings the run appears to offer are artifacts of the constants,
+not observations, and neither is recorded as evidence.
+
+The combined fast clear wrote stencil 0x5a, the byte the backing already
+held, so a preserved stencil and a stencil the clear overwrote produce
+the same value. The lifecycle now clears stencil 0x3c against a backing
+of 0x5a, and the exported stencil then names which happened.
+
+The partial update draw carried `ZB_CNTL` `Z_ENABLE` with
+`Z_WRITE_ENABLE` clear, so it requested no depth write at all. The
+absence of 0x400000 from depth memory follows from the command stream
+under every model of the ZMASK and carries no verdict.
+
+The materialization quad's own depth was 0.0, distinct from the clear
+code but degenerate against a zeroed or untouched surface. It is now
+`R300_ZMASK_MATERIALIZE_Z`, 0.375, whose code 0x600000 stands apart from
+the backing, the clear and the update alike.
+
+### Stop point: the write path substituted where the read path did not
+
+One stream, one `ZB_BW_CNTL` word, and one plane-equation format
+produced a depth read that answered out of depth memory and a depth
+write that delivered the clear code. A model in which the plane-equation
+format alone governs the tile lookup predicts both to fail together.
+This is a hypothesis failing in an unexpected way, so it is recorded
+rather than resolved: the next run's block correction is the cheapest
+decisive test, and a mechanism for the asymmetry is named only if the
+correction leaves it standing.
+
+### Falsification record: the corrected block
+
+The stream now resolves one compression block from the level's own
+layout. For the 64x64 macrotiled single-sample level that block is 8x8:
+`GB_Z_PEQ_CONFIG` carries `Z_PEQ_SIZE_8_8` at the bind, at both
+application draws and at the materialize prefix, the `3D_CLEAR_ZMASK`
+payload covers four dwords, and the materialize suffix restores 4x4 once
+`ZB_BW_CNTL` clears.
+
+Prediction, recorded before the run:
+
+- If the block is the mechanism, the LESS draw reads the clear code
+  0x800000, 0x400000 compares less, and all 4096 pixels carry the draw
+  color; depth memory afterward reads the clear word 0x8000003c with
+  0x600000 absent, and the exported stencil reads 0x3c.
+- If pixels stay at the color sentinel, the block is refuted and the
+  ZMASK bind addressing and the cache ordering between `3D_CLEAR_ZMASK`
+  and the first read take over as the open hypotheses.
+- If 0x600000 appears in depth memory, the materialization draw fills
+  with the fragment depth and destroys the surface, and
+  `R300_ZMASK_MATERIALIZE_Z` returns to the clear code.
+
+The values the lifecycle programs:
+
+| Role | Depth code | Clear depth | Stencil |
+| --- | --- | --- | --- |
+| backing | 0x200000 | -- | 0x5a |
+| image A fast clear | 0x800000 | 0.5 | 0x3c |
+| partial update | 0x400000 | -- | 0x5a |
+| materialization quad | 0x600000 | 0.375 | -- |
+| image B fast clear | 0xbfffff | 0.75 | 0xa5 |
+
+`r3v_native_depth_clear` converts a clear depth with
+`value * 16777215.0 + 0.5`, which is why 0.75 names 0xbfffff. 0.375 is
+exact in binary and `round(0.375 * (2^24 - 1))` and `0.375 * 2^24` are
+both 0x600000, so the materialization quad's code is one value whichever
+scaling the depth path applies to a pretransformed window-space Z.
 
 `r300-zmask-kernel-register-crosscheck` is the standing check that the
 class cannot return: it holds every register every ZMASK plan stage and

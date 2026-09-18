@@ -192,8 +192,12 @@ r3v_CreateImage(VkDevice _device, const VkImageCreateInfo *pCreateInfo,
             .zmask_ram_dwords_per_pipe =
                r300_zmask_ram_dwords_per_pipe(CHIP_RS480),
          };
+         /* The level's own block, which every stream that binds this
+          * image then reads back: the fast clear's coverage, the
+          * GB_Z_PEQ_CONFIG the draws program, and the materialize
+          * prefix all resolve through this one layout. */
          if (r300_zmask_layout_compute_at_block(
-                &zmask_params, R300_ZCOMP_4X4, &zmask_layout) != 0)
+                &zmask_params, R300_ZCOMP_8X8, &zmask_layout) != 0)
             return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
          zmask_layout_admitted = zmask_layout.fits_zmask_ram;
       }

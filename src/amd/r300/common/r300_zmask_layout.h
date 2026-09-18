@@ -68,7 +68,30 @@ struct r300_zmask_layout {
     * macrotiled single-sample level on a capable part, otherwise 4x4.
     */
    bool zcomp8x8;
+   /* The block the level itself admits, which a request for the smaller
+    * block leaves untouched.  zcomp8x8 says which block this layout was
+    * resolved at; this says which block the pipe decodes when HyperZ is
+    * on, because r300_update_hyperz derives Z_PEQ_SIZE_8_8 from the
+    * level's tex.zcomp8x8 rather than from any per-stream choice.  The
+    * two differ exactly on a layout pinned below its level, which is the
+    * pairing r300_zmask_layout_below_admitted_block names.
+    */
+   bool admits_zcomp8x8;
 };
+
+/* A layout resolved below the block its level admits.  A stream that
+ * enables ZB_BW_CNTL RD_COMP_ENABLE reads tiles through the plane
+ * equations the pipe decodes at the level's own block, so metadata
+ * covering the smaller block leaves three quarters of the tiles the
+ * surface needs unaddressed and the lookup falls through to depth
+ * memory.  The compression-disabled configuration carries no such
+ * pairing, so the predicate gates the compression-read builders alone.
+ */
+static inline bool
+r300_zmask_layout_below_admitted_block(const struct r300_zmask_layout *layout)
+{
+   return layout->admits_zcomp8x8 && !layout->zcomp8x8;
+}
 
 /* Computes the layout at the largest compression block the level admits:
  * R300_ZCOMP_8X8 on a macrotiled single-sample level on a capable part,
@@ -97,14 +120,20 @@ int r300_zmask_layout_compute(const struct r300_zmask_layout_params *params,
  *
  * The compression-disabled configuration is what pins 4x4.  The R5xx
  * acceleration guide requires 4x4 plane equations while compression is
- * disabled, so the GA and the ZB agree on the plane-equation format.
- * In-tree r300_update_hyperz sets Z_PEQ_SIZE_8_8 from
- * tex.zcomp8x8[level] whenever HyperZ is enabled, before it decides
- * which enables ZB_BW_CNTL carries, so the Gallium path and the guide
- * describe the compression-disabled case differently.  The guide is the
- * higher-ranked authority and decides the value; no retained silicon
- * observation of either configuration exists, and the disagreement is
- * recorded rather than settled here.
+ * disabled, so the GA and the ZB agree on the plane-equation format
+ * wherever ZB_BW_CNTL leaves FAST_FILL_ENABLE clear.
+ *
+ * A configuration that enables the ZMASK reaches the other block.
+ * r300_update_hyperz sets Z_PEQ_SIZE_8_8 from tex.zcomp8x8[level]
+ * whenever HyperZ is enabled and returns from its zmask_decompress arm
+ * after setting FAST_FILL_ENABLE | RD_COMP_ENABLE, so Gallium's own
+ * decompression stream pairs 8x8 plane equations with compression
+ * reads on a macrotiled level.  On RS485M a stream that paired 4x4
+ * plane equations and a sixteen-dword clear with FAST_FILL_ENABLE |
+ * RD_COMP_ENABLE draws over a macrotiled 64x64 level left every depth
+ * read answering out of depth memory rather than the cleared metadata,
+ * so the guide's compression-disabled clause does not reach the
+ * compression-enabled case and the level's own block governs there.
  */
 int r300_zmask_layout_compute_at_block(
    const struct r300_zmask_layout_params *params,

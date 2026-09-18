@@ -150,6 +150,27 @@ sweep(uint32_t pipes, uint32_t zmask_ram)
                   assert(layout.zcomp8x8 == ref.zcomp8x8);
                   assert(layout.fits_zmask_ram == (ref.zmask_dwords != 0));
                   assert(layout.zmask_ram_dwords == zmask_ram * pipes);
+
+                  /* The level's own decision, which the 8x8 request
+                   * takes and a 4x4 request leaves in place.  The
+                   * conjunct is the one r300_setup_hyperz_properties
+                   * applies, and the pinned layout carries it so a
+                   * compression-read stream can refuse a coverage below
+                   * it. */
+                  const bool admits =
+                     capable != 0 && macrotile && samples <= 1u &&
+                     micro != 0 && formats[f].bytes_per_pixel == 4u;
+                  assert(layout.admits_zcomp8x8 == admits);
+                  assert(!layout.zcomp8x8 || layout.admits_zcomp8x8);
+                  assert(!r300_zmask_layout_below_admitted_block(&layout));
+
+                  struct r300_zmask_layout pinned;
+                  assert(r300_zmask_layout_compute_at_block(
+                            &params, R300_ZCOMP_4X4, &pinned) == 0);
+                  assert(!pinned.zcomp8x8);
+                  assert(pinned.admits_zcomp8x8 == admits);
+                  assert(r300_zmask_layout_below_admitted_block(&pinned) ==
+                         admits);
                   points++;
                }
             }

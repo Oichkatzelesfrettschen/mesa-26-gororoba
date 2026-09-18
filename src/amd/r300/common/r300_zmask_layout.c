@@ -85,15 +85,21 @@ r300_zmask_layout_compute_at_block(
       return 0;
 
    const uint32_t index = params->pipes - 1u;
-   /* The level's own decision, taken when the caller asks for the larger
-    * block.  A request for R300_ZCOMP_4X4 pins it, so the block size the
+   /* The level's own decision, which r300_setup_hyperz_properties takes
+    * from the level alone and r300_update_hyperz then reads back as
+    * tex.zcomp8x8 to program Z_PEQ_SIZE_8_8.  It travels on every layout
+    * past the microtile gate, so a layout pinned to the smaller block
+    * still carries the block the pipe decodes. */
+   const bool admits_zcomp8x8 = params->zcomp8x8_capable &&
+                                params->macrotile &&
+                                params->num_samples <= 1u;
+   out->admits_zcomp8x8 = admits_zcomp8x8;
+
+   /* A request for R300_ZCOMP_4X4 pins the smaller block, so the
     * metadata count and the plane-equation register are both derived
-    * from is one value rather than two. */
+    * from one value rather than two. */
    const uint32_t zcompsize =
-      (block == R300_ZCOMP_8X8 && params->zcomp8x8_capable &&
-       params->macrotile && params->num_samples <= 1u)
-         ? 8u
-         : 4u;
+      (block == R300_ZCOMP_8X8 && admits_zcomp8x8) ? 8u : 4u;
    const uint32_t xblock = zmask_blocks_x_per_dw[index] * zcompsize;
    const uint32_t yblock = zmask_blocks_y_per_dw[index] * zcompsize;
 

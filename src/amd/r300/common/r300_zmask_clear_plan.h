@@ -137,26 +137,23 @@ int r300_zmask_clear_bw_cntl_check(uint32_t zb_bw_cntl);
  * -EINVAL. */
 int r300_zmask_clear_stages_self_check(void);
 
-/* The compression block a stage pins.  A stage that leaves both
- * RD_COMP_ENABLE and WR_COMP_ENABLE clear reads and writes depth memory
- * uncompressed, and the R5xx acceleration guide requires 4x4 plane
- * equations while compression is disabled, so stages A through E answer
- * R300_ZCOMP_4X4 and the GA and the ZB agree on the plane-equation
- * format.  Stage F enables compressed writes, which is where 8x8 first
- * becomes admissible; it answers 4x4 as well, because the 4x4-versus-8x8
- * disagreement between the guide and in-tree r300_update_hyperz is a
- * recorded conflict with no silicon observation on either side, and a
- * pinned default keeps the unsettled question out of the stream a caller
- * gets by default.  r300_zmask_clear_stage_admits_block is what opens 8x8
- * at stage F.
+/* The compression block a stage pins by default.  Every stage answers
+ * R300_ZCOMP_4X4, so a caller that names no block gets the smaller one
+ * and the ladder walks its stages at a fixed coverage.  The block a
+ * stream actually programs comes off the layout instead, through
+ * r300_zmask_fast_clear_plan_build and
+ * r300_zmask_clear_plan_build_at_block.
  */
 enum r300_zmask_compression r300_zmask_clear_stage_block(
    enum r300_zmask_clear_stage stage);
 
-/* Whether a stage may program a block.  Stage F admits both blocks and
- * every other stage admits R300_ZCOMP_4X4 alone, so the caller that
- * wants 8x8 states the block explicitly at the one stage whose
- * configuration makes 8x8 meaningful. */
+/* Whether a stage may program a block.  A stage that binds the ZMASK RAM
+ * -- C through F -- admits both blocks, because the coverage its clear
+ * writes is read back through the plane equations the pipe decodes at
+ * the level's own block, so one stream reaches one block whichever rung
+ * seeded the RAM.  Stages A and B bind nothing and admit R300_ZCOMP_4X4
+ * alone, the compression-disabled case the R5xx acceleration guide
+ * pins. */
 bool r300_zmask_clear_stage_admits_block(enum r300_zmask_clear_stage stage,
                                          enum r300_zmask_compression block);
 
