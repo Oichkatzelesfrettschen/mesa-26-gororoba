@@ -14,7 +14,17 @@ import pytest
 
 INFRA_ROOT = Path(__file__).resolve().parents[1]
 PROFILE = "4_r300_full_release_x86_64v1-clang22-distcc-cache"
-BUILD_ROOT_RELATIVE = Path("src/.mesa-26-gororoba-builds/objects")
+
+
+def package_build_root(root: Path) -> Path:
+    source_root = root / "src/mesa-source"
+    source_commit = subprocess.run(
+        ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return source_root / "build" / f"package-mesa-gororoba-{source_commit}"
 
 
 @pytest.fixture
@@ -40,11 +50,9 @@ def package_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         MFLAGS="",
         MAKEOVERRIDES="",
         MESA_LLVM_VERSION="22",
-        MESA_PACKAGE_BUILD_ROOT=str(root / BUILD_ROOT_RELATIVE),
     )
     source_root = root / "src/mesa-source"
     source_root.mkdir(parents=True)
-    (root / BUILD_ROOT_RELATIVE).parent.mkdir(mode=0o700)
     for relative in (
         "Makefile",
         "scripts/resolve-python-interpreter.sh",
@@ -58,6 +66,7 @@ def package_fixture(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         shutil.copy2(INFRA_ROOT / relative, destination)
     (source_root / "meson.build").write_text("project('package-identity')\n")
     (source_root / "meson.options").touch()
+    (source_root / ".gitignore").write_text("/build/\n")
     for arguments in (
         ["init", "-q"],
         ["add", "."],
@@ -143,7 +152,7 @@ def test_default_package_build_records_source_control_identity(
     root, environment = package_fixture
     result = run_callback(root, environment, "build")
     assert result.returncode == 0, result.stdout + result.stderr
-    build_root = root / BUILD_ROOT_RELATIVE
+    build_root = package_build_root(root)
     identity_path = build_root / f"mesa-{PROFILE}/.mesa-source-identity.json"
     identity = json.loads(identity_path.read_text())
     assert (
@@ -177,7 +186,7 @@ def test_default_package_requires_clean_control_source(
     assert result.returncode != 0
     assert "package source/control worktree is dirty" in result.stdout + result.stderr
     assert not (
-        root / BUILD_ROOT_RELATIVE / ".mesa-external-source-identity.json"
+        package_build_root(root) / ".mesa-external-source-identity.json"
     ).exists()
 
 
@@ -189,7 +198,7 @@ def test_default_package_preserves_failed_configuration_identity(
     result = run_callback(root, environment, "build")
     assert result.returncode != 0
     assert "Meson setup failed" in result.stdout + result.stderr
-    build_root = root / BUILD_ROOT_RELATIVE
+    build_root = package_build_root(root)
     identity = json.loads(
         (build_root / ".mesa-external-source-identity.json").read_text()
     )
@@ -204,7 +213,7 @@ def test_default_package_rejects_build_directory_overlapping_source_view(
 ) -> None:
     root, environment = package_fixture
     environment["MESA_PACKAGE_BUILDDIR"] = str(
-        root / BUILD_ROOT_RELATIVE / ".mesa-source-view"
+        package_build_root(root) / ".mesa-source-view"
     )
     result = run_callback(root, environment, "_package_paths; _package_make configure")
     assert result.returncode != 0
@@ -218,7 +227,7 @@ def test_repack_callback_preserves_objects_during_meson_tests(
     root, environment = package_fixture
     result = run_callback(root, environment, "build")
     assert result.returncode == 0, result.stdout + result.stderr
-    object_file = root / BUILD_ROOT_RELATIVE / f"mesa-{PROFILE}/object.o"
+    object_file = package_build_root(root) / f"mesa-{PROFILE}/object.o"
     before = object_file.read_bytes()
     if repack:
         environment["MESA_PACKAGE_BUILDDIR"] = str(object_file.parent)
@@ -252,9 +261,10 @@ def test_default_package_rejects_missing_identity(
     root, environment = package_fixture
     result = run_callback(root, environment, "build")
     assert result.returncode == 0, result.stdout + result.stderr
-    (root / BUILD_ROOT_RELATIVE / ".mesa-external-source-identity.json").unlink()
+    build_root = package_build_root(root)
+    (build_root / ".mesa-external-source-identity.json").unlink()
     target = "build" if operation == "verify-identity" else "clean"
     result = run_callback(root, environment, f"_package_paths; _package_make {target}")
     assert result.returncode != 0
     assert "lacks source identity" in result.stdout + result.stderr
-    assert (root / BUILD_ROOT_RELATIVE / f"mesa-{PROFILE}/object.o").is_file()
+    assert (build_root / f"mesa-{PROFILE}/object.o").is_file()

@@ -703,6 +703,11 @@ def test_real_elf_origin_checks_each_installed_alias(
 
 def test_build_owned_default_and_unprivileged_install() -> None:
     makefile = (ROOT / "Makefile").read_text()
+    assert "BUILD_ROOT := $(CONTROL_ROOT)/build" in makefile
+    assert "/build/" in (ROOT.parent / ".gitignore").read_text()
+    package_common = (ROOT / "packaging/mesa-package-common.sh").read_text()
+    assert "${_control_root}/build/package-${pkgname}-${selected_commit}" in package_common
+    assert "/var/tmp/mesa-26-gororoba" not in package_common
     assert "PREFIX := $(BUILD_ROOT)/prefix" in makefile
     assert "override SELECT_PROFILE_PREFIX = $(BUILD_ROOT)/prefix" in makefile
     install = makefile.split("\ninstall: source-root-check", 1)[1].split(

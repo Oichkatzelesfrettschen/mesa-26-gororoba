@@ -51,7 +51,7 @@ _package_paths() {
   if [[ ${1:-} == from-receipt ]]; then
     _build_root=$(cat "${srcdir}/mesa-package-build-root") || return 1
   else
-    _build_root=${MESA_PACKAGE_BUILD_ROOT:-/var/tmp/mesa-26-gororoba-$(id -u)/package-${pkgname}-${selected_commit}}
+    _build_root=${MESA_PACKAGE_BUILD_ROOT:-${_control_root}/build/package-${pkgname}-${selected_commit}}
   fi
   _builddir=${MESA_PACKAGE_BUILDDIR:-${_build_root}/mesa-${_profile}}
   _stage=${_build_root}/package-root

@@ -986,7 +986,8 @@ def selected_build_boundary(
     build_root = values["build_root"]
     assert isinstance(repository_root, Path)
     assert isinstance(build_root, Path)
-    if build_root == repository_root / "build":
+    repository_build_root = repository_root / "build"
+    if is_within_or_equal(build_root, repository_build_root):
         return repository_root
     matching_namespaces = tuple(
         validate_build_namespace_chain(
@@ -1312,7 +1313,10 @@ def validate_prefix(values: dict[str, Path | str]) -> None:
         (repository_root, "the control worktree"),
         (source_root, "TOPSRC"),
     ):
-        if is_within_or_equal(prefix, boundary) and build_root != boundary / "build":
+        if is_within_or_equal(prefix, boundary) and not is_within_or_equal(
+            build_root,
+            boundary / "build",
+        ):
             fail(f"refusing PREFIX inside {label}: {prefix}")
     if prefix.parent != build_root:
         fail(f"staging PREFIX must be a direct child of BUILD_ROOT: {prefix}")
@@ -1483,7 +1487,10 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
     repository_build_root = repository_root / "build"
     build_boundary = selected_build_boundary(values)
     repository_boundary = containing_git_worktree(build_root)
-    if repository_boundary is not None and build_root != repository_build_root:
+    if repository_boundary is not None and not is_within_or_equal(
+        build_root,
+        repository_build_root,
+    ):
         fail(f"refusing BUILD_ROOT inside a Git worktree: {repository_boundary}")
     if not is_strict_descendant(builddir, build_root):
         fail(f"refusing BUILDDIR outside BUILD_ROOT: {builddir}")
@@ -1509,9 +1516,9 @@ def validate_layout(operation: str, values: dict[str, Path | str]) -> None:
 
     source_is_control = source_root == repository_root
     if source_is_control:
-        if (
-            is_within_or_equal(build_root, repository_root)
-            and build_root != repository_build_root
+        if is_within_or_equal(build_root, repository_root) and not is_within_or_equal(
+            build_root,
+            repository_build_root,
         ):
             fail(f"refusing BUILD_ROOT inside TOPSRC: {build_root}")
         if is_within_or_equal(builddir, repository_root) and not is_strict_descendant(

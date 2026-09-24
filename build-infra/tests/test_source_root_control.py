@@ -430,6 +430,23 @@ def test_validate_layout_accepts_isolated_external_build(
     source_root_control.validate_layout("build", values)
 
 
+def test_validate_layout_accepts_nested_repository_build_root(
+    tmp_path: Path,
+) -> None:
+    control_root = tmp_path / "control"
+    control_root.mkdir()
+    build_root = control_root / "build" / "package-variant" / "source-commit"
+    values = layout_values(tmp_path)
+    values.update(
+        source_root=control_root,
+        control_root=control_root,
+        build_root=build_root,
+        builddir=build_root / "mesa-profile",
+        prefix=build_root / "prefix",
+    )
+    source_root_control.validate_layout("build", values)
+
+
 @pytest.mark.parametrize("operation", ("build", "clean", "configure", "test"))
 def test_validate_layout_rejects_builddir_inside_source_view(
     tmp_path: Path,
