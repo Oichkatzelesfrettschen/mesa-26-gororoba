@@ -480,10 +480,12 @@ Select `MESA_PKG_SRC` as the repository's `mesa-gororoba-debug-optimized` or
 recipe fetches the declared source, configures and builds through Make, runs the
 registered Meson tests and calibrated R3V surface/inventory checks, and invokes
 `stage-package`. `package()` verifies the finalized payload receipt before
-copying the staged files under fakeroot. Source checksums remain enabled. Default package builds use a variant-and-source
-named build root under the validated `/var/tmp/mesa-26-gororoba-<uid>/` namespace;
-new source commits receive fresh identities. A checked source-directory pointer
-preserves the selected build root across makepkg's fakeroot boundary.
+copying the staged files under fakeroot. Source checksums remain enabled.
+Default package builds use a variant-and-source named build root under the
+source worktree's ignored `build/` directory; new source commits receive fresh
+identities. Set `MESA_PACKAGE_BUILD_ROOT` to select a different validated root.
+A checked source-directory pointer preserves the selected build root across
+makepkg's fakeroot boundary.
 
 For an already qualified detached source/control pair, configure, build, and
 test with the same selectors and the exact `PREFIX=/usr`:
