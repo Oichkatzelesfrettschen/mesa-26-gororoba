@@ -48,8 +48,18 @@ int main(void)
    assert(read_plan.words[5] == CP_PACKET0(R300_GB_Z_PEQ_CONFIG, 0));
    assert(read_plan.words[6] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
    assert(read_plan.words[7] == CP_PACKET0(R300_ZB_BW_CNTL, 0));
-   assert(read_plan.words[8] ==
+   assert(read_plan.words[8] == (R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
+                                 R300_WR_COMP_ENABLE));
+   /* The materialize prefix keeps the read-only group, so the two
+    * consumers differ in ZB_BW_CNTL alone. */
+   struct r300_zmask_materialize_plan materialize;
+   assert(r300_zmask_materialize_prefix(
+             &r300_zb_depth_surface_rs485m_z24_macrotiled_logical,
+             &layout, 0x800000u, 0x5au, &materialize) == 0);
+   assert(materialize.words[8] ==
           (R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE));
+   for (uint32_t i = 0u; i < materialize.begin_dword_count; i++)
+      assert(i == 8u || materialize.words[i] == read_plan.words[i]);
    assert(read_plan.words[11] == CP_PACKET0(R300_ZB_BW_CNTL, 0));
    assert(read_plan.words[12] == 0u);
 
@@ -72,7 +82,8 @@ int main(void)
    assert(admitted_plan.words[5] == CP_PACKET0(R300_GB_Z_PEQ_CONFIG, 0));
    assert(admitted_plan.words[6] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8);
    assert(admitted_plan.words[8] ==
-          (R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE));
+          (R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
+           R300_WR_COMP_ENABLE));
    assert(admitted_plan.words[13] == CP_PACKET0(R300_GB_Z_PEQ_CONFIG, 0));
    assert(admitted_plan.words[14] == R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
 

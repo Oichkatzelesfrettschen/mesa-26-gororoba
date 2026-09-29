@@ -30,11 +30,13 @@ validate_inputs(const struct r300_zb_depth_surface *surface,
    return 0;
 }
 
-int
-r300_zmask_materialize_prefix(
-   const struct r300_zb_depth_surface *surface,
-   const struct r300_zmask_layout *layout, uint32_t depth_code,
-   uint32_t stencil, struct r300_zmask_materialize_plan *out)
+/* The bind every metadata consumer shares, closed by the ZB_BW_CNTL group
+ * the consumer's draw needs. */
+static int
+build_prefix(const struct r300_zb_depth_surface *surface,
+             const struct r300_zmask_layout *layout, uint32_t depth_code,
+             uint32_t stencil, uint32_t zb_bw_cntl,
+             struct r300_zmask_materialize_plan *out)
 {
    if (out == NULL || validate_inputs(surface, layout) != 0)
       return -EINVAL;
@@ -56,13 +58,22 @@ r300_zmask_materialize_prefix(
    r300_pm4_reg(&builder, R300_GB_Z_PEQ_CONFIG,
                 layout->zcomp8x8 ? R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_8_8
                                  : R300_GB_Z_PEQ_CONFIG_Z_PEQ_SIZE_4_4);
-   r300_pm4_reg(&builder, R300_ZB_BW_CNTL,
-                R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE);
+   r300_pm4_reg(&builder, R300_ZB_BW_CNTL, zb_bw_cntl);
    if (r300_pm4_builder_finish(&builder, &plan.dword_count) != 0)
       return -ENOSPC;
    plan.begin_dword_count = plan.dword_count;
    *out = plan;
    return 0;
+}
+
+int
+r300_zmask_materialize_prefix(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zmask_layout *layout, uint32_t depth_code,
+   uint32_t stencil, struct r300_zmask_materialize_plan *out)
+{
+   return build_prefix(surface, layout, depth_code, stencil,
+                       R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE, out);
 }
 
 int
@@ -100,9 +111,16 @@ r300_zmask_fast_clear_read_plan(
    if (out == NULL)
       return -EINVAL;
 
+   /* A draw that tests depth without writing it substitutes the clear
+    * value on RS485M only under the full compression group, the word
+    * r300g's r300_update_hyperz emits for its read draws; FAST_FILL and
+    * RD_COMP alone leave the test reading depth memory while the
+    * write-enabled materialize draw substitutes. */
    struct r300_zmask_materialize_plan plan;
-   int result = r300_zmask_materialize_prefix(
-      surface, layout, depth_code, stencil, &plan);
+   int result = build_prefix(
+      surface, layout, depth_code, stencil,
+      R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE | R300_WR_COMP_ENABLE,
+      &plan);
    if (result == 0)
       result = r300_zmask_materialize_suffix(&plan);
    if (result != 0)
