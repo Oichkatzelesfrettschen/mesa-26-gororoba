@@ -122,6 +122,7 @@ r3v_native_plan_capture_slot_role(enum r3v_native_cell_kind kind,
       break;
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_CONTROL:
    case R3V_NATIVE_CELL_KIND_ZB_DEPTH_DISCOVERY:
+   case R3V_NATIVE_CELL_KIND_ZMASK_READ_QUADRANT:
       TABLE(zb_depth_roles);
       break;
    default:

@@ -3,6 +3,7 @@
 #include "r300_zmask_materialize_plan.h"
 
 #include "r300_pm4_builder.h"
+#include "r300_zmask_clear_plan.h"
 #include "r300_reg.h"
 
 #include <errno.h>
@@ -74,6 +75,20 @@ r300_zmask_materialize_prefix(
 {
    return build_prefix(surface, layout, depth_code, stencil,
                        R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE, out);
+}
+
+int
+r300_zmask_read_prefix_at_group(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zmask_layout *layout, uint32_t depth_code,
+   uint32_t stencil, uint32_t zb_bw_cntl,
+   struct r300_zmask_materialize_plan *out)
+{
+   if (zb_bw_cntl & ~(R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
+                      R300_WR_COMP_ENABLE) ||
+       r300_zmask_clear_bw_cntl_check(zb_bw_cntl) != 0)
+      return -EINVAL;
+   return build_prefix(surface, layout, depth_code, stencil, zb_bw_cntl, out);
 }
 
 int

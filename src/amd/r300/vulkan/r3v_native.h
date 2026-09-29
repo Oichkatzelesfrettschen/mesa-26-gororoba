@@ -28,6 +28,7 @@
 #include "amd/r300/common/r300_zb_tile_copy.h"
 #include "amd/r300/common/r300_zmask_layout.h"
 #include "amd/r300/common/r300_zmask_materialize_plan.h"
+#include "amd/r300/common/r300_zmask_read_quadrant_cell.h"
 #include "r3v_native_depth_image_contract.h"
 #include "r3v_native_depth_pipeline.h"
 #include "r3v_interpolation_lowering.h"
@@ -1304,6 +1305,10 @@ struct r3v_native_cmd_buffer {
     * so queue validation reads the exact declaration that emission used. */
    bool zb_coordinate_discovery_configured;
    struct r300_zb_coordinate_discovery zb_coordinate_discovery;
+   /* The arm a recorded ZMASK read-group cell declares, meaningful exactly
+    * when cell_kind is R3V_NATIVE_CELL_KIND_ZMASK_READ_QUADRANT; the queue
+    * holds the stream's vertex-set offsets to it. */
+   enum r300_zmask_read_quadrant_arm zmask_read_quadrant_arm;
    /* The multisample resolve cell's sample-expanded color surface,
     * allocated at that recording and released with the buffer.  It
     * takes RADEON_GEM_DOMAIN_VRAM with no fallback domain and no CPU
@@ -3142,6 +3147,21 @@ VkResult r3v_native_record_zb_depth_discovery(
    VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
    enum r3v_native_zb_discovery_scenario scenario,
    enum r3v_native_zb_discovery_arm arm);
+
+/* Records the ZMASK read-group discovery cell
+ * (src/amd/r300/common/r300_zmask_read_quadrant_cell.h) at one arm:
+ * seeds both arms' vertex sets, the color sentinel, and the uniform depth backing inside
+ * its guards, then installs the clear and the four scissored read draws
+ * with the vertex read, color write, and depth read-write GTT references
+ * in slot order.  The depth allocation is
+ * r300_zmask_read_quadrant_depth_bytes.  Recording is submit-free; the
+ * queue's hazard gate guards execution and the HyperZ acquire runs at
+ * submission.
+ */
+VkResult r3v_native_record_zmask_read_quadrants(
+   VkCommandBuffer commandBuffer, VkDeviceMemory vertexMemory,
+   VkDeviceMemory colorMemory, VkDeviceMemory depthMemory,
+   enum r300_zmask_read_quadrant_arm arm);
 
 /* Records a bounded coordinate-selectable tiled discovery.  Layout, pitch,
  * and base use r300_zb_coordinate_discovery_init's finite domain. */

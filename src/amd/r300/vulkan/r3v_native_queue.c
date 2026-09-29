@@ -18,6 +18,7 @@
 #include "amd/r300/common/r300_tcl_bypass_triangle.h"
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "amd/r300/common/r300_zb_depth_discovery_cell.h"
+#include "amd/r300/common/r300_zmask_read_quadrant_cell.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_cs.h"
 #include "amd/radeon/drm_vk/radeon_drm_vk_reloc.h"
 
@@ -857,6 +858,48 @@ r3v_native_cell_geometry_unfrozen(
          .depth_write = depth_write,
       };
       return r300_zb_depth_discovery_check_state(
+                &declared, cmd_buffer->ib, cmd_buffer->ib_size_dwords) != 0;
+   }
+   case R3V_NATIVE_CELL_KIND_ZMASK_READ_QUADRANT: {
+      /* The vertex sets, the color target, and the guarded depth
+       * allocation at their cell constants, three distinct objects, and
+       * a stream r300_zmask_read_quadrant_check_state holds to the four
+       * groups, scissors, constants and flushes the experiment names.
+       */
+      if (cmd_buffer->reference_count != R300_ZMASK_READ_QUADRANT_SLOT_COUNT)
+         return true;
+      const struct r3v_native_bo_reference *vertex =
+         &cmd_buffer->references[R300_ZMASK_READ_QUADRANT_SLOT_VERTEX];
+      const struct r3v_native_bo_reference *color =
+         &cmd_buffer->references[R300_ZMASK_READ_QUADRANT_SLOT_COLOR];
+      const struct r3v_native_bo_reference *depth =
+         &cmd_buffer->references[R300_ZMASK_READ_QUADRANT_SLOT_DEPTH];
+      if (vertex->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          vertex->write_domain != 0 || vertex->memory == NULL ||
+          vertex->memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION ||
+          color->read_domains != 0 ||
+          color->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          color->memory == NULL ||
+          color->memory->bo.size != R300_ZMASK_READ_QUADRANT_COLOR_BYTES ||
+          depth->read_domains != RADEON_GEM_DOMAIN_GTT ||
+          depth->write_domain != RADEON_GEM_DOMAIN_GTT ||
+          depth->memory == NULL ||
+          depth->memory->bo.size != r300_zmask_read_quadrant_depth_bytes() ||
+          vertex->handle == color->handle || vertex->handle == depth->handle ||
+          color->handle == depth->handle)
+         return true;
+      const struct r300_zb_depth_surface *surface;
+      struct r300_zb_depth_layout layout;
+      struct r300_zmask_layout zmask;
+      if (r300_zmask_read_quadrant_surface(&surface, &layout, &zmask) != 0)
+         return true;
+      const struct r300_zmask_read_quadrant_params declared = {
+         .arm = cmd_buffer->zmask_read_quadrant_arm,
+         .surface = surface,
+         .zmask_layout = &zmask,
+         .depth_offset_bytes = (uint32_t)layout.base_offset_bytes,
+      };
+      return r300_zmask_read_quadrant_check_state(
                 &declared, cmd_buffer->ib, cmd_buffer->ib_size_dwords) != 0;
    }
    case R3V_NATIVE_CELL_KIND_RB2D_TILED_COPY_QUALIFICATION:

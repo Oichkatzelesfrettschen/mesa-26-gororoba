@@ -1677,6 +1677,23 @@ r3v_native_attended_zb_depth_discovery = executable(
   install : false,
 )
 
+# Attended ZMASK read-group discovery: performs a live DRM_RADEON_CS on
+# RS485M silicon under a HyperZ grant, one whole-level fast clear and four
+# scissored read-only draws at four ZB_BW_CNTL groups, retaining the color
+# target and the depth allocation before and after.
+r3v_native_attended_zmask_read_quadrant = executable(
+  'r3v_native_attended_zmask_read_quadrant',
+  files('tests/r3v_native_attended_zmask_read_quadrant.c'),
+  include_directories : [r3v_native_inc, include_directories('.')],
+  dependencies : r3v_native_deps,
+  link_whole : [libr3v_native_impl],
+  link_with : [libradeon_drm_vk],
+  c_args : [no_override_init_args],
+  gnu_symbol_visibility : 'hidden',
+  build_by_default : true,
+  install : false,
+)
+
 # Coordinate-selectable tiled depth discovery.  The separate executable
 # preserves the fixed-scenario apparatus and its retained binary identity.
 r3v_native_attended_zb_coordinate_discovery = executable(
@@ -4553,6 +4570,35 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
           '../common/r300_zb_depth_state.c',
           '../common/r300_zb_depth_surface.c',
           '../common/r300_zb_depth_layout.c'),
+    include_directories : [r3v_native_inc, include_directories('.')],
+    dependencies : [idep_mesautil],
+    gnu_symbol_visibility : 'hidden',
+  )
+
+  # Non-submitting ZMASK read-group arming runner: builds the
+  # four-quadrant stream, writes it beside the evidence for offline replay
+  # through the kernel CS parser, reports its digest, and stops at the
+  # authorization boundary.
+  r3v_native_zmask_read_quadrant_arming_runner = executable(
+    'r3v_native_zmask_read_quadrant_arming_runner',
+    files('r3v_native_arming.c',
+          'tests/r3v_native_zmask_read_quadrant_arming_runner.c',
+          '../common/r300_first_draw_state.c',
+          '../common/r300_fragment_binary.c',
+          '../common/r300_pm4_builder.c',
+          '../common/r300_tcl_bypass_triangle.c',
+          '../common/r300_flat_color0_plan.c',
+          '../common/r300_rs_tex_adj_probe.c',
+          '../common/r300_noperspective_reciprocal_plan.c',
+          '../common/r300_noperspective_q_lane_plan.c',
+          '../common/r300_noperspective_mixed_carrier_plan.c',
+          '../common/r300_zb_depth_state.c',
+          '../common/r300_zb_depth_surface.c',
+          '../common/r300_zb_depth_layout.c',
+          '../common/r300_zmask_clear_plan.c',
+          '../common/r300_zmask_layout.c',
+          '../common/r300_zmask_materialize_plan.c',
+          '../common/r300_zmask_read_quadrant_cell.c'),
     include_directories : [r3v_native_inc, include_directories('.')],
     dependencies : [idep_mesautil],
     gnu_symbol_visibility : 'hidden',
