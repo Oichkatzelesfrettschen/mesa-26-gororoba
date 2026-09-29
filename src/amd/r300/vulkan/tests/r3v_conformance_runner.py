@@ -90,6 +90,7 @@ import os
 import platform
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -439,14 +440,21 @@ def deqp_identity(binary):
     if not b.is_file():
         raise RunnerRefusal(f"dEQP binary {binary} does not exist")
     ident = {"binary": str(b.resolve()), "sha256": sha256_file(b)}
+    # The nearest enclosing checkout names the binary's CTS revision only
+    # when it is a VK-GL-CTS tree; any other checkout -- a Mesa build tree
+    # holding a provisioned bundle beneath its ignored build/ -- ends the
+    # walk without a worktree claim, and the sealed bundle provenance
+    # answers instead.
     repo = b.resolve()
     for _ in range(8):
         repo = repo.parent
         if (repo / ".git").exists():
-            rc, desc = run_capture(
-                ["git", "describe", "--tags", "--always", "--dirty"], cwd=repo
-            )
-            ident["cts_worktree_describe"] = desc if rc == 0 else None
+            if (repo / "external" / "vulkancts").is_dir():
+                rc, desc = run_capture(
+                    ["git", "describe", "--tags", "--always", "--dirty"],
+                    cwd=repo,
+                )
+                ident["cts_worktree_describe"] = desc if rc == 0 else None
             break
     ident["cts_bundle_describe"] = bundle_cts_describe(b, ident["sha256"])
     ident["cts_identity_authority"] = (
@@ -2784,6 +2792,10 @@ def selftest(fixture_qpa):
         (cts_repo / ".gitignore").write_text(RADEON_DRM_SHIM_BASENAME + "\n")
         fake.write_text(FAKE_DEQP)
         fake.chmod(0o755)
+        # The directory deqp_identity reads as the VK-GL-CTS tree marker.
+        cts_marker = cts_repo / "external" / "vulkancts" / "README.md"
+        cts_marker.parent.mkdir(parents=True)
+        cts_marker.write_text("fixture\n")
         subprocess.run(["git", "init", "-q", str(cts_repo)], check=True)
         subprocess.run(
             [
@@ -2797,6 +2809,7 @@ def selftest(fixture_qpa):
                 "add",
                 "deqp-vk",
                 ".gitignore",
+                "external/vulkancts/README.md",
             ],
             check=True,
         )
@@ -3571,6 +3584,23 @@ def selftest(fixture_qpa):
         assert deqp_identity(str(bundle_binary))["cts_identity_authority"] == (
             "bundle_provenance"
         )
+        # A bundle provisioned beneath another project's checkout keeps its
+        # sealed provenance: the enclosing repository is not a CTS tree.
+        enclosing = d / "enclosing-checkout"
+        subprocess.run(["git", "init", "-q", str(enclosing)], check=True)
+        subprocess.run(
+            ["git", "-C", str(enclosing), "-c", "user.name=fixture",
+             "-c", "user.email=fixture@invalid", "commit", "-q",
+             "--allow-empty", "-m", "fixture"],
+            check=True,
+        )
+        nested_bundle = enclosing / "build" / "bundle"
+        nested_bundle.mkdir(parents=True)
+        for name in ("deqp-vk", "provenance.json"):
+            shutil.copy2(bundle / name, nested_bundle / name)
+        assert deqp_identity(str(nested_bundle / "deqp-vk"))[
+            "cts_identity_authority"
+        ] == "bundle_provenance"
         assert cts_revision({"cts_bundle_describe": "fixture"}) == "fixture"
         # The worktree answers ahead of a bundle document.
         assert (
