@@ -665,8 +665,11 @@ direct_fast_clear_read_valid(const struct r3v_native_cmd_buffer *native,
          if (draw_packet == UINT32_MAX)
             peq = word;
       } else if (native->ib[word] == CP_PACKET0(R300_ZB_BW_CNTL, 0)) {
+         /* A depth-test-only read runs under the full compression group;
+          * the write-enabled materialize draw keeps FAST_FILL | RD_COMP. */
          if (native->ib[word + 1u] ==
-             (R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE))
+             (R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
+              R300_WR_COMP_ENABLE))
             enable = word;
          else if (native->ib[word + 1u] == 0u &&
                   draw_packet != UINT32_MAX)

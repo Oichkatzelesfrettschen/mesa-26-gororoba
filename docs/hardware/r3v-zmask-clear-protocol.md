@@ -641,6 +641,62 @@ the materializer write against the checked-in copy of the kernel's own
 authority, and its known-bad is the fifteen-dword stream the RS485M
 refused.
 
+### Known (silicon): 8x8 plane equations leave the read path unchanged
+
+The corrected-block stream executed on mesa d7f4306 with an empty
+`dmesg` delta. It programmed `GB_Z_PEQ_CONFIG` 8x8 and a four-dword
+`3D_CLEAR_ZMASK`, and both LESS draws still left the color sentinel on
+all 4096 pixels. The materialize quad, bound to the same ZMASK offset,
+pitch, block, `ZB_DEPTHOFFSET` and `ZB_BW_CNTL` 0xc, left depth memory
+at the clear word 0x8000003c with 0x600000 absent. The exported stencil
+read 0x3c. The second prediction branch held: the block is refuted.
+
+That same submission also retires the other two hypotheses the record
+named. The materialize write reads the metadata the clear wrote through
+the same bind, so the ZMASK addressing and the clear value are correct.
+The second LESS draw follows one more Z-cache flush and free and still
+answers out of depth memory, so cache ordering between the clear and the
+first read cannot explain it either. What remains is how a draw with the
+depth test enabled and depth writes disabled is programmed.
+
+| Field | Value |
+| --- | --- |
+| observation | color 0xa5a5a5a5 on 4096 pixels; backing 0x8000003c after the materialize quad; `GB_Z_PEQ_CONFIG` 0x1 at every draw |
+| source commit | mesa d7f4306164c package release 27; radeon-unified 0.8.19 srcversion 6AB2F38F on 7.2.5-1-cachyos |
+| retained bundle | `steinmarder-r300` `results/r3v-zmask-public-lifecycle-rs485m-d7f4306-silicon-1c52eff63`, scenario `read-materialize-export` |
+| evidence class | known (silicon) |
+
+### Falsification record: the read-draw compression group
+
+`r300_zmask_fast_clear_read_plan` now writes `ZB_BW_CNTL`
+`FAST_FILL_ENABLE | RD_COMP_ENABLE | WR_COMP_ENABLE` (0x1c) ahead of a
+depth-test-only draw. `r300_zmask_materialize_prefix` keeps
+`FAST_FILL_ENABLE | RD_COMP_ENABLE` (0xc), so the write path that already
+substitutes the clear code stays fixed. 0x1c is the word r300g's
+`r300_update_hyperz` emits for its read draw. That draw substituted the
+0.75 clear value on this part with depth writes disabled
+(`steinmarder-r300` `src/re/r300/results/rs485m-r300g-zmask-fast-clear-substitution-reference`).
+No other register moves.
+
+Prediction, recorded before the run:
+
+- If the compression group is the mechanism, both LESS draws read the
+  clear code 0x800000, 0x400000 compares less, and all 4096 pixels carry
+  the draw color while the guard stays at the sentinel. Depth memory
+  after the materialize quad reads 0x8000003c with 0x600000 absent, and
+  the exported stencil reads 0x3c.
+- If the sentinel persists, the group is refuted. The next single change
+  is `ZB_DEPTHOFFSET` 0, the base r300g binds, followed by flush-only
+  `ZB_ZCACHE_CTLSTAT` sequencing.
+- If any pixel carries the draw color while depth memory shows 0x400000,
+  the read draw wrote depth, which its `ZB_CNTL` forbids. That opens a
+  write-compression side effect as its own finding.
+- `aba-materialize-export` runs only when the read scenario passes.
+
+The ZMASK route rides the experimental fast-clear gate and no CTS case
+selects it, so no CTS, Piglit or deqp row moves. The verdict belongs to
+the retained silicon bundle.
+
 ## Automatic selection
 
 Standing selection of the fast clear over the ordinary combined clear is
