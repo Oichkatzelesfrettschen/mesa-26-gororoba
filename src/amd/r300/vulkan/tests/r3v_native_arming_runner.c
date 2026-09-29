@@ -570,6 +570,20 @@ main(int argc, char **argv)
       printf("  draw dword 0x%08x color bytes %u\n",
              r300_tcl_bypass_triangle_render_shape_draw_dword(&render_shape),
              r300_tcl_bypass_triangle_render_shape_color_bytes(&render_shape));
+      /* A shape past the receipt ceiling records only under the extent
+       * probe gate, which the attended runner's recorder reads; the
+       * report names it beside the arming factors, outside the verdict.
+       */
+      if (render_shape.width > R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT ||
+          render_shape.height > R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT ||
+          render_shape.pitch_pixels >
+             R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT) {
+         const char *probe = getenv("R3V_NATIVE_RENDER_EXTENT_PROBE");
+         printf("  %-22s declared=%-34s required=%-34s %s\n",
+                "extent probe gate", probe != NULL ? probe : "(unset)", "1",
+                probe != NULL && strcmp(probe, "1") == 0 ? "match"
+                                                         : "CLOSED");
+      }
    }
    printf("  cell                   %u IB dwords, blake3 %s\n", ib_dwords,
           digest);

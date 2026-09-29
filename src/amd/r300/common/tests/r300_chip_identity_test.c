@@ -165,6 +165,7 @@ test_rs4xx_igp_family_facts(void)
    /* Sampler ceiling equals the register height mask plus one. */
    assert(facts->sampler_dimension_max == 2048);
    assert(facts->render_span_max == 2560);
+   assert(facts->render_span_max == R300_RS4XX_RENDER_SPAN_MAX);
    /* The vertex-engine absence agrees with the capability row. */
    struct r300_capabilities caps;
    r300_parse_chipset(R300_PCI_DEVICE_RS48X_5974, &caps);

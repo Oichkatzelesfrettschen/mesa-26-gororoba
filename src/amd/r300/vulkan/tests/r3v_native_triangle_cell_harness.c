@@ -57,9 +57,15 @@ VkResult r3v_native_record_tcl_bypass_triangle_render_shape(
  * its own digest and retains its own stream.  The shape-offset mode is
  * that shape with render row 0 at 4096 bytes into the color
  * allocation, so the retained stream carries the RB3D_COLOROFFSET0
- * payload a suballocated attachment binds at.
+ * payload a suballocated attachment binds at.  The shape-extent mode is
+ * the reference shape at the family's emit ceiling, square at pitch
+ * equal to the extent: the declared-shape recorder refuses it until
+ * R3V_NATIVE_RENDER_EXTENT_PROBE is exactly 1, and the open gate leaves
+ * the advertised limits and render-target creation at the receipt
+ * ceiling.
  */
 static bool shape_mode;
+static bool shape_extent_mode;
 static struct r300_triangle_render_shape harness_shape = {
    .width = 256,
    .height = 256,
@@ -209,6 +215,108 @@ read_whole_file(const char *dir, const char *name, void **data_out,
    return 0;
 }
 
+/* The receipt ceiling's public surface under either gate state: the
+ * advertised framebuffer and viewport limits stay at it, render-target
+ * creation admits it and refuses one past it.
+ */
+static void
+check_receipt_ceiling_surface(VkPhysicalDevice pdev, VkDevice device,
+                              PFN_vkGetPhysicalDeviceProperties get_props,
+                              PFN_vkCreateImage create_image,
+                              PFN_vkDestroyImage destroy_image,
+                              const char *gate_state)
+{
+   VkPhysicalDeviceProperties props;
+   get_props(pdev, &props);
+   CHECK(props.limits.maxFramebufferWidth == R3V_NATIVE_RENDER_MAX_EXTENT &&
+            props.limits.maxFramebufferHeight ==
+               R3V_NATIVE_RENDER_MAX_EXTENT &&
+            props.limits.maxViewportDimensions[0] ==
+               R3V_NATIVE_RENDER_MAX_EXTENT &&
+            props.limits.maxViewportDimensions[1] ==
+               R3V_NATIVE_RENDER_MAX_EXTENT,
+         "advertised render limits stay at %u with the gate %s",
+         R3V_NATIVE_RENDER_MAX_EXTENT, gate_state);
+
+   VkImageCreateInfo info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_B8G8R8A8_UNORM,
+      .extent = { R3V_NATIVE_RENDER_MAX_EXTENT, R3V_NATIVE_RENDER_MAX_EXTENT,
+                  1 },
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_LINEAR,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+   };
+   VkImage image = VK_NULL_HANDLE;
+   VkResult result = create_image(device, &info, NULL, &image);
+   CHECK(result == VK_SUCCESS && image != VK_NULL_HANDLE,
+         "a %u render target creates with the gate %s: %d",
+         R3V_NATIVE_RENDER_MAX_EXTENT, gate_state, result);
+   destroy_image(device, image, NULL);
+   for (unsigned axis = 0; axis < 2; axis++) {
+      info.extent.width = R3V_NATIVE_RENDER_MAX_EXTENT + (axis == 0 ? 1 : 0);
+      info.extent.height = R3V_NATIVE_RENDER_MAX_EXTENT + (axis == 1 ? 1 : 0);
+      image = VK_NULL_HANDLE;
+      result = create_image(device, &info, NULL, &image);
+      CHECK(result == R3V_NATIVE_REFUSAL_RESULT && image == VK_NULL_HANDLE,
+            "a render target one past the receipt ceiling on axis %u "
+            "refuses with the gate %s: %d",
+            axis, gate_state, result);
+   }
+}
+
+/* The extent probe gate opens on the exact value 1 alone: unset, empty,
+ * zero, and any other spelling leave the declared-shape recorder at the
+ * receipt ceiling, refusing the emit-ceiling shape before an IB
+ * installs.  The open gate admits the shape and moves no public surface.
+ */
+static void
+check_render_extent_probe_gate(VkPhysicalDevice pdev, VkDevice device,
+                               VkCommandBuffer cmd,
+                               VkDeviceMemory vertex_memory,
+                               VkDeviceMemory color_memory,
+                               PFN_vkGetPhysicalDeviceProperties get_props,
+                               PFN_vkCreateImage create_image,
+                               PFN_vkDestroyImage destroy_image)
+{
+   struct r3v_native_device *native_device =
+      r3v_native_device_from_handle(device);
+   const struct r3v_native_cmd_buffer *native_cmd =
+      r3v_native_cmd_buffer_from_handle(cmd);
+   static const char *const closed_values[] = { NULL, "", "0", "2", "1 " };
+   for (unsigned i = 0; i < ARRAY_SIZE(closed_values); i++) {
+      if (closed_values[i] == NULL)
+         unsetenv("R3V_NATIVE_RENDER_EXTENT_PROBE");
+      else
+         setenv("R3V_NATIVE_RENDER_EXTENT_PROBE", closed_values[i], 1);
+      r3v_native_device_refresh_delivery_gates(native_device);
+      CHECK(native_device->render_extent_probe_gate == NULL,
+            "extent probe gate value %s stays closed",
+            closed_values[i] != NULL ? closed_values[i] : "(unset)");
+      VkResult result = record_render_shape_cell(cmd, vertex_memory,
+                                                 color_memory);
+      CHECK(result == VK_ERROR_INITIALIZATION_FAILED,
+            "the emit-ceiling shape refuses under gate value %s: %d",
+            closed_values[i] != NULL ? closed_values[i] : "(unset)", result);
+      CHECK(native_cmd->ib == NULL && native_cmd->references == NULL,
+            "the refused shape leaves the command buffer empty");
+   }
+   check_receipt_ceiling_surface(pdev, device, get_props, create_image,
+                                 destroy_image, "closed");
+
+   setenv("R3V_NATIVE_RENDER_EXTENT_PROBE", "1", 1);
+   r3v_native_device_refresh_delivery_gates(native_device);
+   CHECK(native_device->render_extent_probe_gate != NULL,
+         "extent probe gate value 1 opens");
+   check_receipt_ceiling_surface(pdev, device, get_props, create_image,
+                                 destroy_image, "open");
+}
+
 /* The reference IB built directly from the shared emitter; the retained
  * ib.bin must equal it byte for byte.
  */
@@ -230,16 +338,29 @@ main(int argc, char **argv)
         strcmp(argv[1], "multi") != 0 &&
         strcmp(argv[1], "empty") != 0 &&
         strcmp(argv[1], "shape") != 0 &&
-        strcmp(argv[1], "shape-offset") != 0)) {
+        strcmp(argv[1], "shape-offset") != 0 &&
+        strcmp(argv[1], "shape-extent") != 0)) {
       fprintf(stderr,
-              "usage: %s closed|open|poison|multi|empty|shape|shape-offset\n",
+              "usage: %s closed|open|poison|multi|empty|shape|shape-offset|"
+              "shape-extent\n",
               argv[0]);
       return 2;
    }
+   shape_extent_mode = strcmp(argv[1], "shape-extent") == 0;
    shape_mode = strcmp(argv[1], "shape") == 0 ||
-                strcmp(argv[1], "shape-offset") == 0;
+                strcmp(argv[1], "shape-offset") == 0 || shape_extent_mode;
    if (strcmp(argv[1], "shape-offset") == 0)
       harness_shape.target_offset = 4096;
+   if (shape_extent_mode) {
+      r300_tcl_bypass_triangle_render_shape_reference(&harness_shape);
+      harness_shape.width = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT;
+      harness_shape.height = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT;
+      harness_shape.pitch_pixels = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT;
+      /* The device reads the gate at creation; it starts closed whatever
+       * the caller's environment carries.
+       */
+      unsetenv("R3V_NATIVE_RENDER_EXTENT_PROBE");
+   }
 
    check_cell_emitter_error_mapping();
 
@@ -347,6 +468,7 @@ main(int argc, char **argv)
    LOAD_INSTANCE(vkCreateDevice);
    LOAD_INSTANCE(vkGetDeviceProcAddr);
    LOAD_INSTANCE(vkDestroyInstance);
+   LOAD_INSTANCE(vkGetPhysicalDeviceProperties);
    PFN_vkGetDeviceProcAddr gdpa = vkGetDeviceProcAddr;
 
    uint32_t pdev_count = 1;
@@ -395,6 +517,8 @@ main(int argc, char **argv)
    LOAD_DEVICE(vkQueueSubmit);
    LOAD_DEVICE(vkDestroyDevice);
    LOAD_DEVICE(vkCmdDraw);
+   LOAD_DEVICE(vkCreateImage);
+   LOAD_DEVICE(vkDestroyImage);
 
    if (empty_manifest_mode)
       CHECK(native_device->manifest_dir == NULL,
@@ -524,6 +648,13 @@ main(int argc, char **argv)
       CHECK(native_device->drm.cache_sync_count == sync_count,
             "aliased roles refuse before cache publication: %" PRIu64,
             native_device->drm.cache_sync_count);
+   }
+
+   if (shape_extent_mode) {
+      check_render_extent_probe_gate(pdev, device, cmd, vertex_memory,
+                                     color_memory,
+                                     vkGetPhysicalDeviceProperties,
+                                     vkCreateImage, vkDestroyImage);
    }
 
    result = record_cell(cmd, vertex_memory, color_memory);

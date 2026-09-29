@@ -24,6 +24,7 @@ def main():
         "R3V_NATIVE_AUTHORIZED_IB_BLAKE3",
         "R3V_NATIVE_AUTHORIZED_KERNEL_RELEASE",
         "R3V_NATIVE_AUTHORIZED_MODULE_SRCVERSION",
+        "R3V_NATIVE_RENDER_EXTENT_PROBE",
     ):
         environment.pop(declaration, None)
 
@@ -81,6 +82,59 @@ def main():
                 "refused by the render-shape family" not in bad_shape.stderr:
             print("FAIL: odd-pitch shape was not refused", file=sys.stderr)
             print(bad_shape.stdout, bad_shape.stderr, file=sys.stderr)
+            return 1
+        if "extent probe gate" in shape_report.stdout:
+            print("FAIL: a shape inside the receipt ceiling reported the "
+                  "extent probe gate", file=sys.stderr)
+            print(shape_report.stdout, file=sys.stderr)
+            return 1
+
+        # The extent ladder's top rung: the emit-ceiling shape emits a
+        # stream of the reference cell's length, and its report names the
+        # extent probe gate the recorder admits it under -- closed while
+        # undeclared, matched at the exact value 1, closed at any other
+        # value.  One pixel past the emit ceiling refuses at the parser.
+        ladder_shape = ["--shape", "2560", "2560", "2560", "bgra",
+                        "0x3e000000", "0x3ec00000", "0x3f200000",
+                        "0x3f600000"]
+        ladder_ib = os.path.join(evidence_dir, "ladder-ib.bin")
+        ladder_emit = subprocess.run(
+            [runner] + ladder_shape + ["--emit-ib", ladder_ib],
+            env=environment, capture_output=True, text=True)
+        if ladder_emit.returncode != 0 or not os.path.isfile(ladder_ib) or \
+                os.path.getsize(ladder_ib) != os.path.getsize(shape_ib):
+            print("FAIL: emit-ceiling --emit-ib failed", file=sys.stderr)
+            print(ladder_emit.stdout, ladder_emit.stderr, file=sys.stderr)
+            return 1
+        for probe, state in ((None, "CLOSED"), ("0", "CLOSED"),
+                             ("1", "match")):
+            probe_env = dict(environment)
+            if probe is not None:
+                probe_env["R3V_NATIVE_RENDER_EXTENT_PROBE"] = probe
+            ladder_report = subprocess.run(
+                [runner] + ladder_shape + [evidence_dir],
+                env=probe_env, capture_output=True, text=True)
+            gate_line = re.search(r"^  extent probe gate .* (\S+)$",
+                                  ladder_report.stdout, re.MULTILINE)
+            if gate_line is None or gate_line.group(1) != state or \
+                    "draw dword 0xdf20609f color bytes 26224640" \
+                    not in ladder_report.stdout:
+                print(f"FAIL: emit-ceiling report under probe {probe!r} "
+                      f"lacks the {state} gate line or its footprint",
+                      file=sys.stderr)
+                print(ladder_report.stdout, ladder_report.stderr,
+                      file=sys.stderr)
+                return 1
+        past_ceiling = subprocess.run(
+            [runner, "--shape", "2561", "2561", "2568", "bgra",
+             "0x3e000000", "0x3ec00000", "0x3f200000", "0x3f600000",
+             evidence_dir],
+            env=environment, capture_output=True, text=True)
+        if past_ceiling.returncode != 2 or \
+                "outside 1..2560" not in past_ceiling.stderr:
+            print("FAIL: a shape past the emit ceiling was not refused",
+                  file=sys.stderr)
+            print(past_ceiling.stdout, past_ceiling.stderr, file=sys.stderr)
             return 1
 
         undeclared = subprocess.run([runner, evidence_dir], env=environment,

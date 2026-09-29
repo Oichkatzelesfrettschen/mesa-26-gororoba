@@ -14,7 +14,7 @@ minimums come from the CTS limit table (`vktApiFeatureInfo.cpp`,
 | limit | advertised | minimum | die fact | class |
 |---|---|---|---|---|
 | `maxImageDimension2D` | 2048 | 4096 | sampler and tiled-row cap 2048 | composed surface |
-| `maxFramebufferWidth/Height`, `maxViewportDimensions` | 64 | 4096 | render span 2560 | executed cell ceiling, then composed |
+| `maxFramebufferWidth/Height`, `maxViewportDimensions` | 256 | 4096 | render span 2560 | executed cell ceiling, then composed |
 | seven sample-count masks | `1` | `1\|4` | `GB_AA_CONFIG`, `GB_MSPOS0/1`, `RB3D_AARESOLVE_*` present; 2x/4x FBO MSAA executes 8/8 | unbuilt native MSAA path |
 
 The sample-count row corrects an earlier assumption: RS485M has
@@ -57,21 +57,49 @@ Each rung carries its observation, constraint, hypothesis, falsifier,
 validation, and the receipt that widens the limit.  A rung opens its
 limit only after the attended cell is retained in steinmarder-r300.
 
-### R1 render extent 64 to 2560
+### R1 render extent 256 to 2560
 
-Observation: `R3V_MAX_RENDER_EXTENT 64` is the qualified cell's shape,
-pinned by receipt `r3v-native-public-surface`; the die's render span
-is 2560.  Constraint: the retained cell IBs fix `RB3D_COLORPITCH`, the
-scissor, and the viewport at 64.  Hypothesis: the cell family emitter
-parameterized by extent (pitch in 64-byte units, scissor and viewport
-words, `VAP_VF_MAX_VTX_INDX` unchanged) delivers the reference triangle
-byte-exact at 256, 1024, and 2560 with the interior/exterior oracle
-scaled.  Falsifier: any extent whose target differs from the CPU
-oracle, or a CS-track replay refusal at the wider pitch.  Validation:
-`r300-*-cs-track-replay` against linux-radeon-gororoba, then an
-attended cell per extent.  Receipt: a new `LIMIT_RECEIPTS` entry naming
-the widest retained cell; framebuffer and viewport limits rise to it.
-Conformance cost recorded: 2560 stays below 4096 until R2.
+Observation: `R3V_MAX_RENDER_EXTENT 256` is the receipt ceiling,
+`R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT`, the widest render-shape arm
+retained on silicon (`r3v-render-shape-family-seven-arm-delivery-rs482`,
+the 256x256 extent and composed arms); the die's render span is 2560
+(`R300_RS4XX_RENDER_SPAN_MAX`). Constraint: the extent reaches the
+stream through the `SC_SCISSORS_BR` and `SC_CLIPRECT_BR_0` payloads the
+first-draw contract resolves (13-bit fields biased by 1440, so
+`R300_FDS_MAX_EXTENT` is 6752) and the pitch through `RB3D_COLORPITCH0`
+(`R300_COLORPITCH_MASK`, 16382 pixels); both admit 2560, and
+`VAP_VF_MAX_VTX_INDX` stays at the one triangle. Hypothesis: the
+render-shape emitter delivers the reference triangle pixel-exact at
+512, 1024, 2048, and 2560, with the vertices scaled through the
+viewport transform and the oracles scaled with the extent.
+
+What exists: the family carries two ceilings. The emit ceiling,
+`R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT`, is the render span; the
+render-shape validator, the offline emitters, the arming runner, and the
+attended runner admit extent and pitch to it, and
+`test_render_shape_extent_ladder` pins every rung's stream as the
+reference cell with the two scissor-family payloads and
+`RB3D_COLORPITCH0` moved. The receipt ceiling stays at 256 for public
+render-target creation, the viewport and framebuffer admissions, the
+public draw route, and the advertised limits. The declared-shape
+recorders admit past it only under `R3V_NATIVE_RENDER_EXTENT_PROBE=1`,
+and `r3v-native-triangle-cell-shape-extent` records the 2560 shape
+through the drm-shim under the open gate while proving the closed gate
+refuses it and the open gate moves no public surface. The attended
+runner reports a per-pixel `[coverage]` verdict beside the sampled one;
+it reads exact on all seven retained arms. The extent-ladder arms and
+their predictions live in
+`docs/hardware/r3v-native-attended-render-shape-procedure.md`.
+
+Falsifier: any mismatched pixel against the analytic coverage, a canary
+change, a CS-track replay or kernel CS refusal at the wider pitch, or a
+nonempty `dmesg` delta. Owed before the limits move: a CS-track replay
+of each rung's emitted stream (the replay tests carry no render-shape
+member; `R3V_CS_TRACK_REPLAY_TOOL` names the tool), then an attended
+ladder cell per rung, each its own authorization, stopping at the first
+falsifier. Receipt: a new `LIMIT_RECEIPTS` entry naming the widest
+retained rung; the receipt ceiling, framebuffer, and viewport limits
+rise to it. Conformance cost recorded: 2560 stays below 4096 until R2.
 
 ### R2 composed 4096 render and copy surfaces
 

@@ -36,6 +36,13 @@
 #define R300_MODULE_CONSTANT_CPU_ROUTE_IB_BLAKE3 \
    "3a3443902879a0c86e30bc6e1d2ba69c933a306902838040363239b80bd60030"
 
+/* The render-shape extent arm: 256x256 at pitch 256, B8G8R8A8 lanes,
+ * the reference constant -- the largest render-shape stream an attended
+ * RS485M session submitted and retained.  It differs from the CPU route
+ * in the two scissor-family payloads and RB3D_COLORPITCH0 alone. */
+#define R300_RETAINED_RENDER_SHAPE_EXTENT_256_IB_BLAKE3 \
+   "4479402566bb3b69effe1fa4375fc414f6d13eaf104925eebbb9b2bfa3e268cc"
+
 /* GPU route: the composed public R2VB producer stream from
  * r300_r2vb_public_route_reference_compose(), producer then consumer. */
 #define R300_RETAINED_GPU_ROUTE_IB_DWORDS 547u

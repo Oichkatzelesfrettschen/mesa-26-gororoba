@@ -23,7 +23,9 @@
  * and the constant as four binary32 bit patterns in hex (0x3f800000 is
  * 1.0), so the declaration is exact and the report grep-matches it.
  * Every token is vetted before the numeric parse, and a value outside
- * the family's admission refuses with the reason on stderr.
+ * the family's admission refuses with the reason on stderr.  Extent and
+ * pitch admit to the family's emit ceiling; the recorder admits a shape
+ * past the receipt ceiling only under R3V_NATIVE_RENDER_EXTENT_PROBE=1.
  */
 static inline bool
 r3v_render_shape_parse_decimal(const char *text, unsigned long *out)
@@ -69,9 +71,9 @@ r3v_render_shape_parse(char *const argv[], struct r300_triangle_render_shape *sh
    unsigned long extent[3];
    for (int i = 0; i < 3; i++) {
       if (!r3v_render_shape_parse_decimal(argv[i], &extent[i]) ||
-          extent[i] < 1 || extent[i] > R300_TRIANGLE_RENDER_MAX_EXTENT) {
+          extent[i] < 1 || extent[i] > R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT) {
          fprintf(stderr, "shape extent or pitch outside 1..%u\n",
-                 R300_TRIANGLE_RENDER_MAX_EXTENT);
+                 R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT);
          return false;
       }
    }

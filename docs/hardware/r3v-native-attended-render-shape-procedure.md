@@ -124,6 +124,15 @@ Recorded per arm before the run; the observation stands as made.
   canary=1` with `interior_samples=4`; the centroid sample equals the
   predicted dword of the arm's row, the `(0,0)` sample and the canary
   row carry `0xa5a5a5a5`.
+- The `[coverage]` line reports `judged=1 exact=1 canary=1` with
+  `mismatch_pixels=0`, `ambiguous_pixels=0`, and `interior_pixels`
+  equal to `analytic_pixels`: 1152 at extent 64, 18432 at extent 256.
+  The coverage verdict classifies every pixel center of the extent
+  against the analytic triangle (`r300_tcl_bypass_triangle_coverage_oracle`)
+  and joins the runner's pass verdict beside the sampled one; re-judged
+  over the seven retained color targets of
+  `r3v-render-shape-family-seven-arm-delivery-rs482`, it reads exact on
+  every arm.
 - `dmesg` gains no radeon CS validation error, reset, or lockup line.
 
 ## Falsifiers
@@ -167,3 +176,72 @@ shape's footprint (`offset + pitch * (height + 1) * 4` bytes), the arming report
 with the shape line, and the runner's console with the `[shape]` and
 `[oracle]` lines. A session bundle relates the arms to the
 program-status row they close.
+
+## Extent ladder
+
+The ladder carries the reference triangle past the receipt ceiling
+(`R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT`, 256, the widest retained
+arm) to the family's emit ceiling (`R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT`,
+the RS485M render span `R300_RS4XX_RENDER_SPAN_MAX`, 2560). Every rung
+is square at pitch equal to the extent, B8G8R8A8 lanes, and the
+reference constant, so each rung moves the two scissor-family payloads
+and `RB3D_COLORPITCH0` against the reference cell and nothing else
+(`test_render_shape_extent_ladder` in `r300_tcl_bypass_triangle_test`
+pins the three dwords at every rung). The vertices scale with the
+extent through the viewport transform, as the 256 arm's did:
+`(e/8, e/8)`, `(7e/8, e/8)`, `(e/2, 7e/8)`.
+
+A rung past the receipt ceiling records only under
+`R3V_NATIVE_RENDER_EXTENT_PROBE=1`, declared beside the arming
+variables in step 2; unset, empty, `0`, or any other value leaves the
+recorder at the receipt ceiling, and the attended runner refuses the
+shape before creating an instance. The arming report prints an
+`extent probe gate` line for such a shape, `match` only at the exact
+value. The gate opens the declared-shape recorders alone: the advertised
+framebuffer and viewport limits, render-target creation, and the public
+draw route stay at 256 (`r3v-native-triangle-cell-shape-extent` pins
+both gate states).
+
+| rung | `--shape` tokens | predicted interior | color bytes | `[oracle]` samples | `[coverage]` interior / exterior pixels | centroid sample |
+|------|------------------|--------------------|-------------|--------------------|------------------------------------------|-----------------|
+| 512 | `512 512 512 bgra 0x3e000000 0x3ec00000 0x3f200000 0x3f600000` | `0xdf20609f` | 1050624 | 4 interior, 12 exterior | 73728 / 188416 | `(256,192)` |
+| 1024 | `1024 1024 1024 bgra 0x3e000000 0x3ec00000 0x3f200000 0x3f600000` | `0xdf20609f` | 4198400 | 4 interior, 12 exterior | 294912 / 753664 | `(512,384)` |
+| 2048 | `2048 2048 2048 bgra 0x3e000000 0x3ec00000 0x3f200000 0x3f600000` | `0xdf20609f` | 16785408 | 4 interior, 12 exterior | 1179648 / 3014656 | `(1024,768)` |
+| 2560 | `2560 2560 2560 bgra 0x3e000000 0x3ec00000 0x3f200000 0x3f600000` | `0xdf20609f` | 26224640 | 4 interior, 12 exterior | 1843200 / 4710400 | `(1280,960)` |
+
+The interior count is 9/32 of the extent's area, the NDC triangle's
+0.75-by-0.75 half-rectangle, and no pixel center lies on an edge at any
+rung, so `ambiguous_pixels` predicts 0. The color footprint is
+`pitch * (extent + 1) * 4` bytes, the canary row included.
+
+Order and authorization:
+
+- The session's reference arm runs first as the control, then the
+  receipted 256 extent arm, then the rungs in table order.
+- Each rung is its own authorization: its own evidence directory, the
+  digest its own arming report names, and its own one-shot token.
+- The ladder stops at the first falsifier; no later rung runs in that
+  session.
+
+Falsifiers, each ending the ladder at its rung:
+
+- Any mismatched pixel: `[coverage]` `exact=0`, `mismatch_pixels`
+  nonzero, or `interior_pixels` below the rung's `analytic_pixels`; or
+  `[oracle]` `interior=0` or `exterior=0`.
+- A canary change: `canary=0` on either line, a write in the canary row
+  or the pitch padding.
+- A CS refusal: `vkQueueSubmit` returns an error or `DRM_RADEON_CS`
+  rejects the stream (`r100_cs_track_check` bounds the color buffer
+  by `offset + pitch * cpp * maxy` against the allocation).
+- A nonempty radeon `dmesg` delta: a CS validation line, reset, or
+  lockup.
+
+The ladder owes a CS-track replay before its first attended rung: the
+`r300-*-cs-track-replay` tests replay the fixed cell's 64-pixel bundle
+and carry no render-shape member, so each rung's
+`r3v_native_arming_runner --shape <tokens> --emit-ib <path>` stream
+replays through `replay_r300_cs_track` with a bundle sized to the
+rung's color footprint. A passing rung's retained bundle is the receipt
+that raises `R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT`,
+`R3V_MAX_RENDER_EXTENT`, and the advertised framebuffer and viewport
+limits to that rung's extent.

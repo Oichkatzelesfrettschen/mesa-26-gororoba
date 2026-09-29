@@ -1778,7 +1778,7 @@ test_render_shape_deviates_per_parameter(void)
    shape.pitch_pixels = 66;
    assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
-   shape.width = R300_TRIANGLE_RENDER_MAX_EXTENT + 1;
+   shape.width = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT + 1;
    assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
    r300_tcl_bypass_triangle_render_shape_reference(&shape);
    shape.triangle_count = 2;
@@ -1822,6 +1822,163 @@ paint_shape(const struct r300_triangle_render_shape *shape,
             rows[y * shape->pitch_pixels + x] = color;
       }
    }
+}
+
+/* The extent ladder the attended session climbs past the receipt
+ * ceiling to the emit ceiling: square, pitch equal to the extent, the
+ * reference lanes and constant.  At every rung exactly three dwords leave
+ * the reference cell -- the SC_SCISSORS_BR and SC_CLIPRECT_BR_0 payloads,
+ * each the rung's biased word, and RB3D_COLORPITCH0, the rung's packed
+ * pitch -- and the vertices scale through the viewport transform.  An
+ * independently painted witness at the rung's full footprint passes both
+ * verdicts at the counts the attended procedure predicts, and one wrong
+ * interior pixel fails the coverage verdict while the sampled verdict,
+ * blind to it, still passes.
+ */
+static void
+test_render_shape_extent_ladder(void)
+{
+   struct r300_tcl_bypass_triangle_ib reference;
+   assert(r300_tcl_bypass_triangle_reference_emit(&reference) == 0);
+   const uint32_t reference_br =
+      ((R300_TRIANGLE_TARGET_WIDTH - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_X_SHIFT) |
+      ((R300_TRIANGLE_TARGET_HEIGHT - 1 + R300_SCISSORS_OFFSET)
+       << R300_SCISSORS_Y_SHIFT);
+
+   /* The receipted 256 arm keeps its retained stream. */
+   struct r300_triangle_render_shape shape;
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.width = shape.height = shape.pitch_pixels = 256;
+   struct r300_tcl_bypass_triangle_ib cell;
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+   char digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, digest);
+   assert(strcmp(digest, R300_RETAINED_RENDER_SHAPE_EXTENT_256_IB_BLAKE3) ==
+          0);
+   r300_tcl_bypass_triangle_release(&cell);
+
+   /* The analytic interior is 9/32 of the extent's area (the NDC
+    * triangle spans 0.75 of each axis), and no pixel center lies on an
+    * edge at any rung.
+    */
+   static const struct {
+      uint32_t extent;
+      uint32_t analytic_pixels;
+   } rungs[] = {
+      { 512, 73728 },
+      { 1024, 294912 },
+      { 2048, 1179648 },
+      { R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT, 1843200 },
+   };
+   for (unsigned r = 0; r < ARRAY_SIZE(rungs); r++) {
+      const uint32_t e = rungs[r].extent;
+      r300_tcl_bypass_triangle_render_shape_reference(&shape);
+      shape.width = shape.height = shape.pitch_pixels = e;
+      assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == 0);
+      assert(r300_tcl_bypass_triangle_render_shape_draw_dword(&shape) ==
+             0xdf20609fu);
+      const uint32_t bytes =
+         r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
+      assert(bytes == e * (e + 1u) * 4u);
+
+      assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) == 0);
+      assert(cell.ib_size_dwords == reference.ib_size_dwords);
+      const uint32_t extent_br =
+         ((e - 1 + R300_SCISSORS_OFFSET) << R300_SCISSORS_X_SHIFT) |
+         ((e - 1 + R300_SCISSORS_OFFSET) << R300_SCISSORS_Y_SHIFT);
+      uint32_t indices[8];
+      assert(ib_deviating_dwords(&reference, &cell, indices, 8) == 3);
+      uint32_t scissor_words = 0, pitch_words = 0;
+      for (unsigned i = 0; i < 3; i++) {
+         const uint32_t reg = payload_register(&cell, indices[i]);
+         if (reg == R300_RB3D_COLORPITCH0) {
+            assert(cell.ib[indices[i]] ==
+                   r300_rb3d_colorpitch0_pack_argb8888(e));
+            pitch_words++;
+         } else {
+            assert(reg == R300_SC_SCISSORS_BR ||
+                   reg == R300_SC_CLIPRECT_BR_0);
+            assert(reference.ib[indices[i]] == reference_br);
+            assert(cell.ib[indices[i]] == extent_br);
+            scissor_words++;
+         }
+      }
+      assert(scissor_words == 2 && pitch_words == 1);
+      r300_tcl_bypass_triangle_release(&cell);
+
+      float vertices[R300_TRIANGLE_VERTEX_DWORDS];
+      r300_tcl_bypass_triangle_render_shape_vertices(&shape, vertices);
+      assert(vertices[0] == 0.125f * (float)e &&
+             vertices[1] == 0.125f * (float)e &&
+             vertices[4] == 0.875f * (float)e &&
+             vertices[8] == 0.5f * (float)e &&
+             vertices[9] == 0.875f * (float)e);
+
+      uint32_t *target = malloc(bytes);
+      assert(target != NULL);
+      paint_shape(&shape, target, bytes / 4u);
+      struct r300_triangle_oracle_verdict sampled;
+      r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                   &sampled);
+      assert(sampled.executed && sampled.interior_pass &&
+             sampled.exterior_pass && sampled.canary_pass);
+      assert(sampled.interior_samples == 4 && sampled.exterior_samples == 12);
+      const uint32_t color =
+         r300_tcl_bypass_triangle_render_shape_draw_dword(&shape);
+      struct r300_triangle_coverage_verdict coverage;
+      r300_tcl_bypass_triangle_coverage_oracle(
+         &shape, &color, 1, R300_TRIANGLE_COLOR_SENTINEL, target, bytes,
+         &coverage);
+      assert(coverage.judged && coverage.coverage_exact &&
+             coverage.canary_pass);
+      assert(coverage.analytic_pixels == rungs[r].analytic_pixels &&
+             coverage.interior_pixels == rungs[r].analytic_pixels &&
+             coverage.ambiguous_pixels == 0 &&
+             coverage.mismatch_pixels == 0 &&
+             coverage.exterior_pixels == e * e - rungs[r].analytic_pixels);
+
+      /* One sentinel pixel just inside the base edge, away from every
+       * sampled point: only the coverage verdict sees it.
+       */
+      const uint32_t hole = (e / 8u + 4u) * e + e / 4u;
+      assert(target[hole] == color);
+      target[hole] = R300_TRIANGLE_COLOR_SENTINEL;
+      r300_tcl_bypass_triangle_render_shape_oracle(&shape, target, bytes,
+                                                   &sampled);
+      assert(sampled.interior_pass && sampled.exterior_pass);
+      r300_tcl_bypass_triangle_coverage_oracle(
+         &shape, &color, 1, R300_TRIANGLE_COLOR_SENTINEL, target, bytes,
+         &coverage);
+      assert(coverage.judged && !coverage.coverage_exact &&
+             coverage.interior_pixels == rungs[r].analytic_pixels - 1u);
+      free(target);
+   }
+
+   /* The emit ceiling bounds each of extent and pitch; a pitch inside it
+    * off the eight-pixel grid refuses at any extent.
+    */
+   r300_tcl_bypass_triangle_render_shape_reference(&shape);
+   shape.width = shape.height = shape.pitch_pixels =
+      R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT;
+   shape.width = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT + 1;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   shape.width = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT;
+   shape.height = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT + 1;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   shape.height = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT;
+   shape.pitch_pixels = R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT + 8;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   assert(r300_tcl_bypass_triangle_render_shape_emit(&shape, &cell) ==
+          -EINVAL);
+   assert(cell.ib == NULL);
+   shape.width = shape.height = 2040;
+   shape.pitch_pixels = 2044;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == -EINVAL);
+   shape.pitch_pixels = 2048;
+   assert(r300_tcl_bypass_triangle_render_shape_validate(&shape) == 0);
+
+   r300_tcl_bypass_triangle_release(&reference);
 }
 
 /* The render-shape oracle's calibration on a dEQP-shaped target
@@ -3641,6 +3798,7 @@ main(void)
    test_extent_oracle_calibration();
    test_extent_emit_deviates_in_scissor_words_alone();
    test_render_shape_deviates_per_parameter();
+   test_render_shape_extent_ladder();
    test_render_shape_oracle_calibration();
    test_coverage_oracle_calibration();
    test_coverage_oracle_predicted_calibration();

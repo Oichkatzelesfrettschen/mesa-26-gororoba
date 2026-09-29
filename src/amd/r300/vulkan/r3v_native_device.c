@@ -176,6 +176,8 @@ r3v_native_device_refresh_delivery_gates(struct r3v_native_device *device)
       exact_gate("R3V_NATIVE_ZMASK_INITIALIZE_EXPERIMENTAL");
    device->zmask_fast_clear_gate =
       exact_gate("R3V_NATIVE_ZMASK_FAST_CLEAR_EXPERIMENTAL");
+   device->render_extent_probe_gate =
+      exact_gate("R3V_NATIVE_RENDER_EXTENT_PROBE");
    uint32_t route_count = 0;
    const struct r300_operation_route_row *routes =
       r300_operation_route_rows(&route_count);

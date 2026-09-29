@@ -9,16 +9,6 @@
 #include <stdbool.h>
 #include <string.h>
 
-/* Scissor and clip-rectangle coordinates on non-R500 silicon carry a 1440
- * offset in both axes; the packed word is x | (y << 13). The X and Y fields
- * are thirteen bits wide, so the largest biased coordinate is 8191.
- */
-#define R300_FDS_SCISSOR_BIAS 1440u
-#define R300_FDS_SCISSOR_FIELD_MAX \
-   (R300_SCISSORS_X_MASK >> R300_SCISSORS_X_SHIFT)
-#define R300_FDS_MAX_EXTENT \
-   (R300_FDS_SCISSOR_FIELD_MAX - R300_FDS_SCISSOR_BIAS + 1u)
-
 static uint32_t
 scissor_word(uint32_t x, uint32_t y)
 {

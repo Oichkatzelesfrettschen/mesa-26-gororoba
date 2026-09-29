@@ -162,6 +162,36 @@ validate_triangle_memory_roles(struct r3v_native_device *device,
    return VK_SUCCESS;
 }
 
+/* True when the shape's extent and pitch lie inside the receipt ceiling,
+ * the geometry every public render-target admission already holds.
+ */
+static bool
+render_shape_inside_receipt(const struct r300_triangle_render_shape *shape)
+{
+   return shape->width <= R3V_NATIVE_RENDER_MAX_EXTENT &&
+          shape->height <= R3V_NATIVE_RENDER_MAX_EXTENT &&
+          shape->pitch_pixels <= R3V_NATIVE_RENDER_MAX_EXTENT;
+}
+
+/* A declared-shape recorder admits the family's emit ceiling only under
+ * R3V_NATIVE_RENDER_EXTENT_PROBE=1, so a target past the receipt ceiling
+ * reaches the queue through the operator's exact opt-in alone.
+ */
+static VkResult
+admit_declared_shape_extent(struct r3v_native_device *device,
+                            const struct r300_triangle_render_shape *shape)
+{
+   if (render_shape_inside_receipt(shape) ||
+       device->render_extent_probe_gate != NULL)
+      return VK_SUCCESS;
+   return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                    "r3v-native: render shape %ux%u pitch %u lies past the "
+                    "receipt ceiling %u; R3V_NATIVE_RENDER_EXTENT_PROBE=1 "
+                    "admits it",
+                    shape->width, shape->height, shape->pitch_pixels,
+                    R3V_NATIVE_RENDER_MAX_EXTENT);
+}
+
 /* Records the fixed TCL-bypass triangle cell into a native command buffer:
  * writes the pretransformed vertices through the vertex memory's mapping,
  * builds the reference fragment binary, emits the cell IB, and installs it
@@ -244,6 +274,9 @@ r3v_native_record_tcl_bypass_triangle_render_shape(
    if (r300_tcl_bypass_triangle_render_shape_validate(shape) != 0)
       return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                        "r3v-native: render shape outside the family");
+   VkResult extent_result = admit_declared_shape_extent(device, shape);
+   if (extent_result != VK_SUCCESS)
+      return extent_result;
    const uint32_t color_bytes =
       r300_tcl_bypass_triangle_render_shape_color_bytes(shape);
    if (vertex_memory->bo.size < R3V_TRIANGLE_VERTEX_BYTES ||
@@ -898,6 +931,11 @@ r3v_native_record_tcl_bypass_triangle_carrier(
    shape.target_offset = (uint32_t)target_base;
    if (!varying)
       memcpy(shape.color_bits, color_bits, sizeof(shape.color_bits));
+   /* The public draw route records at the receipt ceiling whatever the
+    * extent probe gate holds; image creation admits no larger target.
+    */
+   if (!render_shape_inside_receipt(&shape))
+      return vk_error(device, R3V_NATIVE_REFUSAL_RESULT);
    struct r300_zb_depth_state_params depth_state;
    const struct r300_zb_depth_state_params *selected_depth_state = NULL;
    if (depth_memory != NULL || depth_bound != NULL || depth_pipeline != NULL ||
@@ -4657,6 +4695,12 @@ r3v_native_record_composed_render_sample(
 
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+   VkResult extent_result =
+      admit_declared_shape_extent(device, &composed->render);
+   if (extent_result == VK_SUCCESS)
+      extent_result = admit_declared_shape_extent(device, &composed->sample);
+   if (extent_result != VK_SUCCESS)
+      return extent_result;
 
    /* The four roles the cell fills: the two vertex arrays, the shared
     * first target, and the second target.  A handle repeated across two
@@ -4774,6 +4818,12 @@ r3v_native_record_multi_pass(VkCommandBuffer commandBuffer,
 
    if (r300_tcl_bypass_triangle_multi_pass_binding_validate(mp) != 0)
       return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   for (unsigned pass = 0; pass < 2; pass++) {
+      VkResult extent_result =
+         admit_declared_shape_extent(device, &mp->pass[pass]);
+      if (extent_result != VK_SUCCESS)
+         return extent_result;
+   }
 
    /* The binding the handles produce: a second vertex page equal to the
     * first takes index 0, else the next unused index; the second color
@@ -4887,6 +4937,12 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
 
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   VkResult extent_result = admit_declared_shape_extent(device, &msaa->render);
+   if (extent_result == VK_SUCCESS)
+      extent_result = admit_declared_shape_extent(device, &msaa->destination);
+   if (extent_result != VK_SUCCESS)
+      return extent_result;
 
    struct r3v_native_memory *const role[3] = { render_vertex, cover_vertex,
                                                destination };

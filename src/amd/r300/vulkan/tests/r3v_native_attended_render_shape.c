@@ -3,8 +3,8 @@
  *
  * Attended render-shape cell: submits the TCL-bypass triangle over a
  * declared extent, pitch, lane order, and fragment constant to RS485M
- * silicon through the native ICD and reports the render-shape oracle's
- * verdict.  This program performs a live DRM_RADEON_CS and runs only
+ * silicon through the native ICD and reports the sampled render-shape
+ * verdict and the per-pixel coverage verdict.  This program performs a live DRM_RADEON_CS and runs only
  * under the authorization and procedure in
  * docs/hardware/r3v-native-attended-render-shape-procedure.md; the
  * driver's arming conjunction admits it, and every stage prints and
@@ -99,6 +99,22 @@ main(int argc, char **argv)
       return 2;
    }
    const char *evidence_dir = argv[argi];
+   /* The recorder admits a shape past the receipt ceiling only under the
+    * exact extent probe gate, and a release driver's refusal reaches the
+    * console as a bare result code, so the runner names the gate itself
+    * before any instance exists.
+    */
+   const char *probe = getenv("R3V_NATIVE_RENDER_EXTENT_PROBE");
+   if ((shape.width > R3V_NATIVE_RENDER_MAX_EXTENT ||
+        shape.height > R3V_NATIVE_RENDER_MAX_EXTENT ||
+        shape.pitch_pixels > R3V_NATIVE_RENDER_MAX_EXTENT) &&
+       (probe == NULL || strcmp(probe, "1") != 0)) {
+      fprintf(stderr,
+              "shape lies past the receipt ceiling %u; it records only "
+              "under R3V_NATIVE_RENDER_EXTENT_PROBE=1\n",
+              R3V_NATIVE_RENDER_MAX_EXTENT);
+      return 2;
+   }
    const uint32_t color_bytes =
       r300_tcl_bypass_triangle_render_shape_color_bytes(&shape);
    const uint32_t predicted_dword =
@@ -332,6 +348,23 @@ main(int argc, char **argv)
           "(0,0)=0x%08x canary row=0x%08x\n",
           cx, cy, pixels[cy * shape.pitch_pixels + cx], predicted_dword,
           pixels[0], pixels[shape.pitch_pixels * shape.height]);
+   /* The sampled verdict judges four interior and twelve exterior
+    * points; the coverage verdict classifies every pixel center of the
+    * extent against the analytic triangle, so a wrong pixel anywhere in
+    * the target is a named count.
+    */
+   struct r300_triangle_coverage_verdict coverage;
+   r300_tcl_bypass_triangle_coverage_oracle(&shape, &predicted_dword, 1,
+                                            R300_TRIANGLE_COLOR_SENTINEL,
+                                            color_map, color_bytes,
+                                            &coverage);
+   printf("[coverage] judged=%d exact=%d canary=%d interior_pixels=%u "
+          "analytic_pixels=%u ambiguous_pixels=%u exterior_pixels=%u "
+          "mismatch_pixels=%u\n",
+          coverage.judged, coverage.coverage_exact, coverage.canary_pass,
+          coverage.interior_pixels, coverage.analytic_pixels,
+          coverage.ambiguous_pixels, coverage.exterior_pixels,
+          coverage.mismatch_pixels);
    fflush(stdout);
 
    stage("teardown");
@@ -342,7 +375,9 @@ main(int argc, char **argv)
    vkDestroyInstance(instance, NULL);
 
    const bool passed = verdict.executed && verdict.interior_pass &&
-                       verdict.exterior_pass && verdict.canary_pass;
+                       verdict.exterior_pass && verdict.canary_pass &&
+                       coverage.judged && coverage.coverage_exact &&
+                       coverage.canary_pass;
    printf("[verdict] %s\n", passed ? "cell rendered as predicted"
                                    : "prediction deviated; the deviation "
                                      "is the finding");

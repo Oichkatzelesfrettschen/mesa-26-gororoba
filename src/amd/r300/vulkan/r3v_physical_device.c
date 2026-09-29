@@ -41,6 +41,11 @@
 #include <radeon_drm.h>
 #include <xf86drm.h>
 
+/* The advertised framebuffer and viewport limits and the render-target
+ * admission read one receipt ceiling. */
+static_assert(R3V_MAX_RENDER_EXTENT == R3V_NATIVE_RENDER_MAX_EXTENT,
+              "advertised render extent equals the admitted one");
+
 /* The compute-queue claim derives from the verb ledger: unconditional
  * once every verb executes on both routes, else the exact opt-in over
  * the delivered CPU route. */

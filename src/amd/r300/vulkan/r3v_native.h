@@ -1801,6 +1801,12 @@ struct r3v_native_device {
    const char *zmask_ownership_gate;
    const char *zmask_initialize_gate;
    const char *zmask_fast_clear_gate;
+   /* R3V_NATIVE_RENDER_EXTENT_PROBE at the exact value 1: the
+    * declared-shape recorders admit extent and pitch past the receipt
+    * ceiling (R3V_NATIVE_RENDER_MAX_EXTENT) up to the family's emit
+    * ceiling.  Public render-target admission and the advertised limits
+    * read the receipt ceiling alone. */
+   const char *render_extent_probe_gate;
    /* The compute route gate table, one entry per route identity read from
     * that route's own gate the same way (the literal "1" or NULL).  A gate
     * belongs to one route, so an open gate never makes a second route for
@@ -1923,14 +1929,16 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(r3v_native_buffer_view, base, VkBufferView,
 
 /* The public recording surface's render-target family, the target
  * parameters r300_triangle_render_shape carries: 2D color attachments
- * of either 32-bpp lane order at any extent inside
- * R300_TRIANGLE_RENDER_MAX_EXTENT per axis.  Each parameter moves one
- * named register class of the cell and nothing else, so the family
- * shares the reference cell's construction: the extent moves the two
- * scissor-family payloads, the pitch moves RB3D_COLORPITCH0, and the
- * lane order moves the US_OUT_FMT_0 C*_SEL fields.
+ * of either 32-bpp lane order at any extent inside the family's receipt
+ * ceiling (R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT) per axis.  Each
+ * parameter moves one named register class of the cell and nothing
+ * else, so the family shares the reference cell's construction: the
+ * extent moves the two scissor-family payloads, the pitch moves
+ * RB3D_COLORPITCH0, and the lane order moves the US_OUT_FMT_0 C*_SEL
+ * fields.  The emit ceiling past it reaches a device only through the
+ * declared-shape recorders under R3V_NATIVE_RENDER_EXTENT_PROBE.
  */
-#define R3V_NATIVE_RENDER_MAX_EXTENT R300_TRIANGLE_RENDER_MAX_EXTENT
+#define R3V_NATIVE_RENDER_MAX_EXTENT R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT
 
 /* The linear 32-bpp row pitch r300g's surface layout emits: the width
  * rounded up to eight pixels (r300_get_pixel_alignment, DIM_WIDTH,
