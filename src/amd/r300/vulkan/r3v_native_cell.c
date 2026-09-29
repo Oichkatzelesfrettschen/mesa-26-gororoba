@@ -4938,7 +4938,8 @@ r3v_native_record_msaa_resolve(VkCommandBuffer commandBuffer,
    struct r3v_native_device *device = container_of(
       cmd_buffer->vk.base.device, struct r3v_native_device, vk);
 
-   VkResult extent_result = admit_declared_shape_extent(device, &msaa->render);
+   VkResult extent_result =
+      admit_declared_shape_extent(device, &msaa->render);
    if (extent_result == VK_SUCCESS)
       extent_result = admit_declared_shape_extent(device, &msaa->destination);
    if (extent_result != VK_SUCCESS)

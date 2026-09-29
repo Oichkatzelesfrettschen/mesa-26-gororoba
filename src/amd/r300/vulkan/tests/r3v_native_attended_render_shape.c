@@ -4,8 +4,9 @@
  * Attended render-shape cell: submits the TCL-bypass triangle over a
  * declared extent, pitch, lane order, and fragment constant to RS485M
  * silicon through the native ICD and reports the sampled render-shape
- * verdict and the per-pixel coverage verdict.  This program performs a live DRM_RADEON_CS and runs only
- * under the authorization and procedure in
+ * verdict and the per-pixel coverage verdict.  This program performs a
+ * live DRM_RADEON_CS and runs only under the authorization and procedure
+ * in
  * docs/hardware/r3v-native-attended-render-shape-procedure.md; the
  * driver's arming conjunction admits it, and every stage prints and
  * flushes before it runs so a hang names the stage it hung in.
