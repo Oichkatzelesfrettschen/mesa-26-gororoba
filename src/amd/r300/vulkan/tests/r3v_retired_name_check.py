@@ -96,20 +96,32 @@ STATUS_FAIL = 1
 STATUS_USAGE = 2
 
 
+def git_toplevel(root: Path):
+    """The worktree toplevel git resolves for root, or None outside one."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        capture_output=True)
+    if result.returncode != 0:
+        return None
+    return Path(result.stdout.decode().strip()).resolve()
+
+
 def scan_files(root: Path):
     """Every tracked regular file.  Token matching accepts only UTF-8 text,
     but repository paths enter the same scan whether or not their contents
     decode.  Git's index excludes ignored build products and local residue."""
-    listing = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "-z"],
-        capture_output=True)
-    if listing.returncode == 0:
+    if git_toplevel(root) == root.resolve():
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            capture_output=True, check=True)
         candidates = [root / rel
                       for rel in sorted(listing.stdout.decode().split("\0"))
                       if rel]
     else:
-        # The fixture has no index.  Its filesystem fallback uses the same
-        # regular-file domain, so fixture results cover the production rule.
+        # A root that is not its own worktree toplevel -- the fixture, or a
+        # source view archived beneath an enclosing checkout's ignored build
+        # tree -- has no index of its own; the enclosing index lists none of
+        # its files.  The filesystem walk covers the same regular-file domain.
         candidates = sorted(root.rglob("*"))
     for path in candidates:
         if not path.is_file():
@@ -356,6 +368,18 @@ def selftest() -> int:
             "src/a.c", "R300VK", "R3V_DEBUG", "env-compat retirement",
             "fallback reader leaves")
         expect("known-good", check_fixture(good), False)
+        with tempfile.TemporaryDirectory(
+                prefix="r3v-retired-name-enclosing-") as outer_tmp:
+            outer = Path(outer_tmp)
+            subprocess.run(["git", "init", "-q", str(outer)], check=True)
+            (outer / ".gitignore").write_text("build/\n", encoding="utf-8")
+            nested = outer / "build" / "source-view"
+            (nested / "src").mkdir(parents=True)
+            (nested / "src/a.c").write_text(
+                'getenv("R300VK_DEBUG");\n', encoding="utf-8")
+            checks.append((
+                "enclosing-checkout-root",
+                ("src/a.c", "R300VK") in find_hits(nested)))
         expect("unlisted-hit", check_fixture("# empty\n"), True,
                "outside the rename ledger")
         (root / "docs/b.md").write_text("r300vk\n", encoding="utf-8")
