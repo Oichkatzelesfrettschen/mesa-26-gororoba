@@ -24,6 +24,18 @@ int r300_zmask_materialize_prefix(
 
 int r300_zmask_materialize_suffix(struct r300_zmask_materialize_plan *out);
 
+/* The shared bind closed by a caller-chosen ZB_BW_CNTL group drawn from
+ * FAST_FILL_ENABLE, RD_COMP_ENABLE and WR_COMP_ENABLE, for a discovery
+ * cell that holds the bind fixed and moves the group alone.  A bit outside
+ * the three, or the rule-8 combination r300_zmask_clear_bw_cntl_check
+ * refuses, is -EINVAL.  The suffix is r300_zmask_materialize_suffix.
+ */
+int r300_zmask_read_prefix_at_group(
+   const struct r300_zb_depth_surface *surface,
+   const struct r300_zmask_layout *layout, uint32_t depth_code,
+   uint32_t stencil, uint32_t zb_bw_cntl,
+   struct r300_zmask_materialize_plan *out);
+
 /* Builds the complete register wrapper for a depth read that consumes a
  * ZMASK fast-clear value directly.  The prefix binds the metadata at the
  * layout's own block and enables FAST_FILL with read and write

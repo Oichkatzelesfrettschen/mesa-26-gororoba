@@ -180,6 +180,14 @@ enum r3v_native_cell_kind {
     * The ordered-operation table binds every PM4 span and dependency point
     * to the API operation that produced it. */
    R3V_NATIVE_CELL_KIND_ORDERED_IMAGE_COMPOSITION,
+   /* The ZMASK read-group discovery cell: one whole-level fast clear of
+    * the lifecycle's tiled Z24 level and four scissored read-only LESS
+    * draws, each under its own ZB_BW_CNTL group
+    * (src/amd/r300/common/r300_zmask_read_quadrant_cell.h).  Three
+    * slots: the vertex sets read, the color target written, the depth
+    * allocation read and written.
+    */
+   R3V_NATIVE_CELL_KIND_ZMASK_READ_QUADRANT,
 };
 
 /* Every fact the verdict rests on, collected before the decision so the

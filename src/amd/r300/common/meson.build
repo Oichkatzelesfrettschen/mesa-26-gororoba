@@ -47,6 +47,7 @@ r300_common_contract_files = files(
   'r300_zmask_clear_plan.c',
   'r300_zmask_compressed_qualification.c',
   'r300_zmask_materialize_plan.c',
+  'r300_zmask_read_quadrant_cell.c',
   'r300_zmask_layout.c',
 )
 
@@ -562,6 +563,7 @@ r300_zb_depth_control_cell_test = executable(
         'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c', 'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c', 'r300_noperspective_reciprocal_plan.c', 'r300_noperspective_q_lane_plan.c', 'r300_noperspective_mixed_carrier_plan.c',
         'r300_zb_depth_control_cell.c', 'r300_zb_depth_state.c',
         'r300_zb_depth_surface.c', 'r300_zb_depth_layout.c',
+        'r300_zmask_clear_plan.c', 'r300_zmask_layout.c',
         'r300_zmask_materialize_plan.c',
         'tests/r300_zb_depth_control_cell_test.c'),
   c_args : r300_format_contract_test_c_args,
@@ -1452,7 +1454,8 @@ test(
 r300_zmask_materialize_plan_test = executable(
   'r300_zmask_materialize_plan_test',
   files('r300_pm4_builder.c', 'r300_zb_depth_layout.c',
-        'r300_zb_depth_surface.c', 'r300_zmask_materialize_plan.c',
+        'r300_zb_depth_surface.c', 'r300_zmask_clear_plan.c',
+        'r300_zmask_layout.c', 'r300_zmask_materialize_plan.c',
         'tests/r300_zmask_materialize_plan_test.c'),
   c_args : r300_format_contract_test_c_args,
   include_directories : [r300_format_contract_test_includes,
@@ -1483,6 +1486,32 @@ r300_zmask_kernel_register_crosscheck_test = executable(
 )
 test('r300-zmask-kernel-register-crosscheck',
      r300_zmask_kernel_register_crosscheck_test, suite : ['r300'])
+
+# The ZMASK read-group discovery cell: the four-quadrant stream, its
+# state check, and the color and depth oracles, held against the HyperZ
+# admission walker and the kernel PACKET0 authority.
+r300_zmask_read_quadrant_cell_test = executable(
+  'r300_zmask_read_quadrant_cell_test',
+  files('r300_first_draw_state.c', 'r300_fragment_binary.c',
+        'r300_pm4_builder.c', 'r300_tcl_bypass_triangle.c',
+        'r300_flat_color0_plan.c', 'r300_rs_tex_adj_probe.c',
+        'r300_noperspective_reciprocal_plan.c',
+        'r300_noperspective_q_lane_plan.c',
+        'r300_noperspective_mixed_carrier_plan.c',
+        'r300_zb_depth_state.c', 'r300_zb_depth_surface.c',
+        'r300_zb_depth_layout.c', 'r300_zb_hyperz_admission.c',
+        'r300_zmask_clear_plan.c', 'r300_zmask_layout.c',
+        'r300_zmask_materialize_plan.c', 'r300_zmask_read_quadrant_cell.c',
+        'tests/r300_kernel_packet0_authority.c',
+        'tests/r300_zmask_read_quadrant_cell_test.c'),
+  c_args : r300_format_contract_test_c_args,
+  include_directories : [r300_format_contract_test_includes,
+                         include_directories('.')],
+  dependencies : [idep_mesautil],
+  gnu_symbol_visibility : 'hidden',
+)
+test('r300-zmask-read-quadrant-cell', r300_zmask_read_quadrant_cell_test,
+     suite : ['r300'])
 r300_zb_aspect_copy_test = executable(
   'r300_zb_aspect_copy_test',
   files('r300_zb_aspect_copy.c', 'r300_zb_depth_layout.c',

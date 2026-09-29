@@ -24,6 +24,7 @@
 #include "amd/r300/common/r300_zb_depth_control_cell.h"
 #include "amd/r300/common/r300_zb_depth_layout.h"
 #include "amd/r300/common/r300_zb_depth_discovery_cell.h"
+#include "amd/r300/common/r300_zmask_read_quadrant_cell.h"
 #include "amd/r300/common/r300_reg.h"
 #include "amd/r300/cpu/r300_cpu_vertex.h"
 #include "amd/r300/cpu/r300_cpu_vertex_job.h"
@@ -3951,6 +3952,142 @@ r3v_native_record_zb_depth_discovery(
       commandBuffer, vertexMemory, colorMemory, depthMemory,
       r3v_native_zb_discovery_scenario_descriptor(scenario_selection),
       scenario_selection, NULL, arm);
+}
+
+/* Maps a host-visible allocation, runs fill over its bytes, and syncs
+ * the CPU cache so the device reads the seeded bytes. */
+static VkResult
+zmask_read_quadrant_seed(struct r3v_native_device *device,
+                         struct r3v_native_memory *memory, const char *role,
+                         const struct r300_zb_depth_layout *layout)
+{
+   bool owns_map = memory->map == NULL;
+   if (owns_map &&
+       radeon_drm_vk_bo_map(&device->drm, &memory->bo, &memory->map) != 0) {
+      return vk_errorf(device, VK_ERROR_MEMORY_MAP_FAILED,
+                       "r3v-native: ZMASK read-quadrant %s memory is not "
+                       "CPU-mappable", role);
+   }
+   int rc = 0;
+   if (layout != NULL)
+      rc = r300_zmask_read_quadrant_fill_depth(layout, memory->map,
+                                               memory->bo.size);
+   else if (strcmp(role, "color") == 0)
+      r300_zmask_read_quadrant_fill_color(memory->map, memory->bo.size);
+   else
+      memcpy(memory->map, r300_zmask_read_quadrant_vertices,
+             sizeof(r300_zmask_read_quadrant_vertices));
+   radeon_drm_vk_bo_cache_sync(&device->drm, memory->map, memory->bo.size);
+   if (owns_map) {
+      radeon_drm_vk_bo_unmap(&device->drm, &memory->bo, memory->map);
+      memory->map = NULL;
+   }
+   if (rc != 0)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: ZMASK read-quadrant %s seed refused",
+                       role);
+   return VK_SUCCESS;
+}
+
+VkResult
+r3v_native_record_zmask_read_quadrants(VkCommandBuffer commandBuffer,
+                                       VkDeviceMemory vertexMemory,
+                                       VkDeviceMemory colorMemory,
+                                       VkDeviceMemory depthMemory)
+{
+   VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
+   VK_FROM_HANDLE(r3v_native_memory, color_memory, colorMemory);
+   VK_FROM_HANDLE(r3v_native_memory, depth_memory, depthMemory);
+   if (cmd_buffer == NULL || vertex_memory == NULL || color_memory == NULL ||
+       depth_memory == NULL)
+      return VK_ERROR_INITIALIZATION_FAILED;
+   struct r3v_native_device *device = container_of(
+      cmd_buffer->vk.base.device, struct r3v_native_device, vk);
+
+   const struct r300_zb_depth_surface *surface;
+   struct r300_zb_depth_layout layout;
+   struct r300_zmask_layout zmask;
+   if (r300_zmask_read_quadrant_surface(&surface, &layout, &zmask) != 0)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: ZMASK read-quadrant surface resolves no "
+                       "layout");
+   if (vertex_memory->bo.size != R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION ||
+       color_memory->bo.size != R300_ZMASK_READ_QUADRANT_COLOR_BYTES ||
+       depth_memory->bo.size != layout.total_bytes) {
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: ZMASK read-quadrant needs exactly %u "
+                       "vertex, %u color, and %llu depth bytes",
+                       R3V_ZB_DEPTH_CONTROL_VERTEX_ALLOCATION,
+                       R300_ZMASK_READ_QUADRANT_COLOR_BYTES,
+                       (unsigned long long)layout.total_bytes);
+   }
+   /* radeon_drm_vk_reloc_list_add folds duplicate handles into one slot,
+    * which would leave a slot payload outside the relocation chunk. */
+   if (vertex_memory->bo.handle == color_memory->bo.handle ||
+       vertex_memory->bo.handle == depth_memory->bo.handle ||
+       color_memory->bo.handle == depth_memory->bo.handle)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: ZMASK read-quadrant roles require three "
+                       "distinct GEM objects");
+
+   VkResult result =
+      zmask_read_quadrant_seed(device, vertex_memory, "vertex", NULL);
+   if (result == VK_SUCCESS)
+      result = zmask_read_quadrant_seed(device, color_memory, "color", NULL);
+   if (result == VK_SUCCESS)
+      result = zmask_read_quadrant_seed(device, depth_memory, "depth", &layout);
+   if (result != VK_SUCCESS)
+      return result;
+
+   struct r300_zmask_read_quadrant_ib cell;
+   const int emit_result = r300_zmask_read_quadrant_reference_emit(&cell);
+   if (emit_result != 0)
+      return vk_error(device,
+                      r3v_native_cell_vk_result_from_errno(emit_result));
+   if (r300_zmask_read_quadrant_validate_reloc_sites(&cell) != 0) {
+      r300_zmask_read_quadrant_release(&cell);
+      return vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   }
+
+   struct r3v_native_bo_reference *references =
+      calloc(R300_ZMASK_READ_QUADRANT_SLOT_COUNT, sizeof(*references));
+   if (references == NULL) {
+      r300_zmask_read_quadrant_release(&cell);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+   }
+   references[R300_ZMASK_READ_QUADRANT_SLOT_VERTEX] =
+      (struct r3v_native_bo_reference){
+         .handle = vertex_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = 0,
+         .memory = vertex_memory,
+      };
+   references[R300_ZMASK_READ_QUADRANT_SLOT_COLOR] =
+      (struct r3v_native_bo_reference){
+         .handle = color_memory->bo.handle,
+         .read_domains = 0,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = color_memory,
+      };
+   /* The draws read depth memory and the retained after-image is the
+    * evidence that none wrote it, so the depth relocation carries the GTT
+    * domain on both sides like the discovery cell's. */
+   references[R300_ZMASK_READ_QUADRANT_SLOT_DEPTH] =
+      (struct r3v_native_bo_reference){
+         .handle = depth_memory->bo.handle,
+         .read_domains = RADEON_GEM_DOMAIN_GTT,
+         .write_domain = RADEON_GEM_DOMAIN_GTT,
+         .memory = depth_memory,
+      };
+   r3v_native_cmd_buffer_install_ib(cmd_buffer,
+                                    R3V_NATIVE_CELL_KIND_ZMASK_READ_QUADRANT,
+                                    cell.ib, cell.ib_size_dwords, references,
+                                    R300_ZMASK_READ_QUADRANT_SLOT_COUNT);
+   /* install_ib took ownership of cell.ib; only the descriptor resets. */
+   cell.ib = NULL;
+   r300_zmask_read_quadrant_release(&cell);
+   return VK_SUCCESS;
 }
 
 VkResult

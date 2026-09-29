@@ -3143,6 +3143,21 @@ VkResult r3v_native_record_zb_depth_discovery(
    enum r3v_native_zb_discovery_scenario scenario,
    enum r3v_native_zb_discovery_arm arm);
 
+/* Records the ZMASK read-group discovery cell
+ * (src/amd/r300/common/r300_zmask_read_quadrant_cell.h): seeds the four
+ * vertex sets, the color sentinel, and the uniform depth backing inside
+ * its guards, then installs the clear and the four scissored read draws
+ * with the vertex read, color write, and depth read-write GTT references
+ * in slot order.  The depth allocation is
+ * r300_zmask_read_quadrant_depth_bytes.  Recording is submit-free; the
+ * queue's hazard gate guards execution and the HyperZ acquire runs at
+ * submission.
+ */
+VkResult r3v_native_record_zmask_read_quadrants(VkCommandBuffer commandBuffer,
+                                                VkDeviceMemory vertexMemory,
+                                                VkDeviceMemory colorMemory,
+                                                VkDeviceMemory depthMemory);
+
 /* Records a bounded coordinate-selectable tiled discovery.  Layout, pitch,
  * and base use r300_zb_coordinate_discovery_init's finite domain. */
 VkResult r3v_native_record_zb_coordinate_discovery(
