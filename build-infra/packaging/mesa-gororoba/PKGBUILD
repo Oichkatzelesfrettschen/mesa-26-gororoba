@@ -14,7 +14,7 @@ source=("mesa-source::git+https://github.com/Oichkatzelesfrettschen/mesa-26-goro
         '90-mesa-gororoba-r300.conf'
         '20-rs482-modesetting-glamor.conf')
 sha256sums=('SKIP'
-            'd1bfd239b506fa564b2418ee36a97a50d8ace6d8fe7e4eda2e16d60791195dfc'
+            '7296f26576d746426a6bdef84850c8ce232e2e956447c522b33f11fc59a8fc2f'
             '141ea65ad167acf97152f8353935580d20fdb474f2c4a594c38f1864ba0fe0dd'
             '36d6b0bd829ad2af900e8f0144e1056cbd417f7fef834de6a30db29775b7f513'
             '098ae9caee036317b88342a4d3bc0140a8be86af615c148b866f502ea186c254'
