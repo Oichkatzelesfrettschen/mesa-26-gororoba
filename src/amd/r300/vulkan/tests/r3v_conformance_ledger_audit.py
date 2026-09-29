@@ -45,8 +45,8 @@ CLAIMS = {
         r"#define R3V_MAX_RENDER_EXTENT (\d+)u"),
     ("limit_below_core_minimum", "2560"): (
         "source_query",
-        r"src/amd/r300/common/r300_chip_identity.c::"
-        r"\.render_span_max = (\d+),"),
+        r"src/amd/r300/common/r300_chip_identity.h::"
+        r"#define R300_RS4XX_RENDER_SPAN_MAX (\d+)u"),
     ("limit_below_core_minimum", "4096"): (
         "receipt",
         "docs/hardware/rs482-2048-4096-virtualization.md composed surface"),

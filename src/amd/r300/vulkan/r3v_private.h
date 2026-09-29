@@ -34,7 +34,7 @@ extern "C" {
 
 #define R3V_R3XX_MAX_TEXTURE_DIMENSION 2048u
 #define R3V_R3XX_MAX_TEXTURE_3D_DIMENSION 256u
-#define R3V_R3XX_MAX_RENDER_DIMENSION 2560u
+#define R3V_R3XX_MAX_RENDER_DIMENSION R300_RS4XX_RENDER_SPAN_MAX
 #define R3V_R3XX_MAX_ARRAY_LAYERS 1u
 #define R3V_R3XX_MAX_MIP_LEVELS 1u
 #define R3V_R3XX_SUPPORTED_SAMPLE_COUNTS VK_SAMPLE_COUNT_1_BIT
@@ -56,10 +56,10 @@ extern "C" {
 #define R3V_VK10_MIN_COMPUTE_WORKGROUP_SIZE_Z 64u
 /* The executed render ceiling: the render-target family and the
  * viewport/scissor admissions top out at the render-shape family's
- * extent (R300_TRIANGLE_RENDER_MAX_EXTENT, the largest target the
- * delivered arms rendered), so the framebuffer and viewport limits
- * advertise it; the deviation from the Vulkan 1.0 4096 minimum rides
- * the declared nonconformance. */
+ * receipt ceiling (R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT, the largest
+ * target the delivered arms rendered), so the framebuffer and viewport
+ * limits advertise it; the deviation from the Vulkan 1.0 4096 minimum
+ * rides the declared nonconformance. */
 #define R3V_MAX_RENDER_EXTENT 256u
 /* Every image and pipeline admission executes single-sample alone, so
  * the limits advertise the one truthful bit; Vulkan 1.0's required

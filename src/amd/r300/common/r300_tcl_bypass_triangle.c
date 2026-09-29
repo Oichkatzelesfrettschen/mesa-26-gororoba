@@ -2457,15 +2457,23 @@ r300_tcl_bypass_triangle_render_shape_reference(
           sizeof(out->color_bits));
 }
 
+static_assert(R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT <= R300_FDS_MAX_EXTENT,
+              "the emit ceiling fits the first-draw scissor extent");
+static_assert(R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT <= R300_COLORPITCH_MASK,
+              "the emit ceiling fits the RB3D_COLORPITCH0 pitch field");
+static_assert(R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT <=
+                 R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT,
+              "every receipted extent is an emitted extent");
+
 int
 r300_tcl_bypass_triangle_render_shape_validate_geometry(
    const struct r300_triangle_render_shape *shape)
 {
    if (shape == NULL || shape->width < 1 || shape->height < 1 ||
-       shape->width > R300_TRIANGLE_RENDER_MAX_EXTENT ||
-       shape->height > R300_TRIANGLE_RENDER_MAX_EXTENT ||
+       shape->width > R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT ||
+       shape->height > R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT ||
        shape->pitch_pixels < shape->width ||
-       shape->pitch_pixels > R300_TRIANGLE_RENDER_MAX_EXTENT ||
+       shape->pitch_pixels > R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT ||
        (shape->pitch_pixels % 8u) != 0 ||
        (shape->lanes != R300_TRIANGLE_LANES_B8G8R8A8 &&
         shape->lanes != R300_TRIANGLE_LANES_R8G8B8A8) ||

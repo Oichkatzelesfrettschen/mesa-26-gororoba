@@ -7,6 +7,8 @@
 #ifndef R300_TCL_BYPASS_TRIANGLE_H
 #define R300_TCL_BYPASS_TRIANGLE_H
 
+#include "r300_chip_identity.h"
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -638,20 +640,25 @@ void r300_tcl_bypass_triangle_varying_extent_oracle(
  */
 #define R300_TRIANGLE_VERTEX_DWORDS 12
 
-/* Extent and pitch ceiling of the family.  RB3D_COLORPITCH0 admits a
- * pitch to 8190 pixels and the first-draw contract an extent to
- * R300_FDS_MAX_EXTENT; the family's ceiling is the largest target a
- * dEQP render case binds against this route, and every emitted word
- * inside it is pinned by the same delta test, so the ceiling rises only
- * with the retained silicon receipt for the larger footprint.
+/* Two extent ceilings bound the family.  The emit ceiling is the die's
+ * render span, inside both the first-draw contract's scissor extent
+ * (R300_FDS_MAX_EXTENT, 6752) and the RB3D_COLORPITCH0 pitch field
+ * (R300_COLORPITCH_MASK, bits 13:1, 16382 pixels); the validator, the
+ * offline emitters, and the arming and attended runners admit extent
+ * and pitch to it, and the render-shape test pins every emitted word
+ * inside it.  The receipt ceiling is the largest extent with a retained
+ * RS485M render receipt; public render-target, viewport, and framebuffer
+ * admission and the advertised limits read it, and it rises only with
+ * the retained receipt for the larger footprint.
  */
-#define R300_TRIANGLE_RENDER_MAX_EXTENT 256u
+#define R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT R300_RS4XX_RENDER_SPAN_MAX
+#define R300_TRIANGLE_RENDER_RECEIPT_MAX_EXTENT 256u
 
 struct r300_triangle_render_shape {
-   /* Render extent in pixels, 1..R300_TRIANGLE_RENDER_MAX_EXTENT. */
+   /* Render extent in pixels, 1..R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT. */
    uint32_t width;
    uint32_t height;
-   /* Row pitch in pixels: >= width, <= the extent ceiling, and a multiple
+   /* Row pitch in pixels: >= width, <= the emit ceiling, and a multiple
     * of 8, the linear 32-bpp width alignment r300g's surface layout
     * emits (r300_get_pixel_alignment, DIM_WIDTH, src/gallium/drivers/
     * r300/r300_texture_desc.c).
@@ -880,7 +887,7 @@ int r300_tcl_bypass_triangle_bind_reloc_indices(
  */
 #define R300_TRIANGLE_TARGET_OFFSET_ALIGNMENT 32u
 /* The offset ceiling keeps offset plus the largest admitted footprint
- * -- R300_TRIANGLE_RENDER_MAX_EXTENT pitch over one row past the
+ * -- R300_TRIANGLE_RENDER_EMIT_MAX_EXTENT pitch over one row past the
  * maximum extent -- inside 32 bits, so
  * r300_tcl_bypass_triangle_render_shape_color_bytes returns an exact
  * uint32_t sum for every admitted shape.

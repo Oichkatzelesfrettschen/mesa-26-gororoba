@@ -2215,7 +2215,8 @@ if with_tests and with_tools.contains('drm-shim') and cc.get_define(
   # surface the runner records through stands behind it.
   r3v_native_compute_record_env = environment(
     r3v_native_cell_vars + {'R3V_NATIVE_COMPUTE_QUEUE_EXPERIMENTAL' : '1'})
-  foreach cell_mode : ['closed', 'open', 'shape', 'shape-offset']
+  foreach cell_mode : ['closed', 'open', 'shape', 'shape-offset',
+                       'shape-extent']
     test(
       'r3v-native-triangle-cell-@0@'.format(cell_mode),
       r3v_native_triangle_cell_harness,

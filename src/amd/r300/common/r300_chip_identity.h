@@ -27,6 +27,12 @@
  */
 #define R300_PCI_DEVICE_RS482M_5975 0x5975
 
+/* The RS4xx IGP render span: the widest color target the family's
+ * render path covers in one pass (r300_family_facts.render_span_max).
+ * Consumers that bound an emitted target by the die read this name.
+ */
+#define R300_RS4XX_RENDER_SPAN_MAX 2560u
+
 /* The product a 1002:5974 specimen carries resolves through the platform:
  * the board's PCI subsystem id and DMI product name select the row.
  *

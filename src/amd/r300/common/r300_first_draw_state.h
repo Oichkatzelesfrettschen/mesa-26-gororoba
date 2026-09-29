@@ -8,9 +8,21 @@
 #define R300_FIRST_DRAW_STATE_H
 
 #include "amd_family.h"
+#include "r300_reg.h"
 
 #include <stdbool.h>
 #include <stdint.h>
+
+/* Scissor and clip-rectangle coordinates on non-R500 silicon carry a 1440
+ * offset in both axes; the packed word is x | (y << 13). The X and Y fields
+ * are thirteen bits wide, so the largest biased coordinate is 8191 and the
+ * widest extent the resolver admits is 6752.
+ */
+#define R300_FDS_SCISSOR_BIAS 1440u
+#define R300_FDS_SCISSOR_FIELD_MAX \
+   (R300_SCISSORS_X_MASK >> R300_SCISSORS_X_SHIFT)
+#define R300_FDS_MAX_EXTENT \
+   (R300_FDS_SCISSOR_FIELD_MAX - R300_FDS_SCISSOR_BIAS + 1u)
 
 /* A first draw on a fresh context inherits register values from the
  * previous client. The contract enumerates the registers a verified
