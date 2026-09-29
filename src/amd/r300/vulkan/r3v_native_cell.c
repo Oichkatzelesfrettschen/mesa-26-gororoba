@@ -3993,7 +3993,8 @@ VkResult
 r3v_native_record_zmask_read_quadrants(VkCommandBuffer commandBuffer,
                                        VkDeviceMemory vertexMemory,
                                        VkDeviceMemory colorMemory,
-                                       VkDeviceMemory depthMemory)
+                                       VkDeviceMemory depthMemory,
+                                       enum r300_zmask_read_quadrant_arm arm)
 {
    VK_FROM_HANDLE(r3v_native_cmd_buffer, cmd_buffer, commandBuffer);
    VK_FROM_HANDLE(r3v_native_memory, vertex_memory, vertexMemory);
@@ -4040,8 +4041,12 @@ r3v_native_record_zmask_read_quadrants(VkCommandBuffer commandBuffer,
    if (result != VK_SUCCESS)
       return result;
 
+   if (r300_zmask_read_quadrant_arm_name(arm) == NULL)
+      return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                       "r3v-native: ZMASK read-quadrant names no arm for "
+                       "selector %d", (int)arm);
    struct r300_zmask_read_quadrant_ib cell;
-   const int emit_result = r300_zmask_read_quadrant_reference_emit(&cell);
+   const int emit_result = r300_zmask_read_quadrant_reference_emit(arm, &cell);
    if (emit_result != 0)
       return vk_error(device,
                       r3v_native_cell_vk_result_from_errno(emit_result));
@@ -4084,6 +4089,7 @@ r3v_native_record_zmask_read_quadrants(VkCommandBuffer commandBuffer,
                                     R3V_NATIVE_CELL_KIND_ZMASK_READ_QUADRANT,
                                     cell.ib, cell.ib_size_dwords, references,
                                     R300_ZMASK_READ_QUADRANT_SLOT_COUNT);
+   cmd_buffer->zmask_read_quadrant_arm = arm;
    /* install_ib took ownership of cell.ib; only the descriptor resets. */
    cell.ib = NULL;
    r300_zmask_read_quadrant_release(&cell);

@@ -49,11 +49,25 @@ write_stream(const char *dir, const uint32_t *ib, uint32_t dwords)
    return written == dwords && closed == 0 ? 0 : -EIO;
 }
 
+static bool
+parse_arm(const char *name, enum r300_zmask_read_quadrant_arm *arm)
+{
+   for (int a = 0; a < R300_ZMASK_READ_QUADRANT_ARM_COUNT; a++) {
+      if (strcmp(name, r300_zmask_read_quadrant_arm_name(
+                          (enum r300_zmask_read_quadrant_arm)a)) == 0) {
+         *arm = (enum r300_zmask_read_quadrant_arm)a;
+         return true;
+      }
+   }
+   return false;
+}
+
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   enum r300_zmask_read_quadrant_arm arm;
+   if (argc != 3 || !parse_arm(argv[2], &arm)) {
+      fprintf(stderr, "usage: %s <evidence-directory> near|far\n", argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
@@ -66,12 +80,13 @@ main(int argc, char **argv)
       return 2;
    }
    struct r300_zmask_read_quadrant_ib cell;
-   if (r300_zmask_read_quadrant_reference_emit(&cell) != 0 ||
+   if (r300_zmask_read_quadrant_reference_emit(arm, &cell) != 0 ||
        r300_zmask_read_quadrant_validate_reloc_sites(&cell) != 0) {
       fprintf(stderr, "cell construction failed\n");
       return 2;
    }
    const struct r300_zmask_read_quadrant_params declared = {
+      .arm = arm,
       .surface = surface,
       .zmask_layout = &zmask,
       .depth_offset_bytes = (uint32_t)layout.base_offset_bytes,
@@ -112,6 +127,7 @@ main(int argc, char **argv)
 
    printf("r3v native zmask-read-quadrant arming report\n");
    printf("cell_kind=zmask-read-quadrant\n");
+   printf("arm=%s\n", r300_zmask_read_quadrant_arm_name(arm));
    printf("ib_dwords=%u\n", ib_dwords);
    printf("ib_blake3=%s\n", digest);
    printf("  %-22s declared=%-34s observed=%-34s %s\n", "hazard gate",

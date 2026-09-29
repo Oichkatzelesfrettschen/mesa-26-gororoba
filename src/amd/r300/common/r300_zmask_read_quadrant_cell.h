@@ -19,13 +19,15 @@
  *    C         (0, 32)   0x04 FAST_FILL          0x400000   fast fill alone
  *    D         (32, 32)  0x0c FF|RD_COMP        0x400000   decompression group
  *
- * A fragment at 0x400000 passes LESS against the 0x800000 clear code and
- * fails against the 0x200000 backing, so a colored B, C or D quadrant
- * names a draw that read the cleared metadata and a sentinel quadrant
- * names one that read depth memory.  A draws below the backing under the
- * compression-disabled state r300_zmask_materialize_suffix restores, so a
- * sentinel A says the ordinary tiled-Z24 test path itself fails and
- * leaves B through D without a verdict.  No draw writes depth, so the
+ * The near arm draws where the two candidate reference values disagree
+ * in the pass direction: a B, C or D fragment at 0x400000 passes LESS
+ * against the 0x800000 clear code and fails against the 0x200000
+ * backing, and A at 0x100000 passes against the backing.  The far arm
+ * draws where every candidate fails: B, C and D at 0xc00000 fail against
+ * the clear code and the backing alike, and A at 0x300000 fails against
+ * the backing, so a colored far quadrant names a test that did not gate
+ * the write.  The two arms emit one stream shape and select their vertex
+ * sets through the LOAD_VBPNTR offsets, so each arm has its own digest.  No draw writes depth, so the
  * cleared metadata and the backing both stay as seeded, and the four
  * quadrants are independent readings of one clear.
  *
@@ -95,8 +97,15 @@ enum r300_zmask_read_quadrant {
 #define R300_ZMASK_READ_QUADRANT_VERTEX_SET_BYTES                           \
    (R300_ZMASK_READ_QUADRANT_VERTEX_COUNT *                                 \
     R300_ZMASK_READ_QUADRANT_VERTEX_STRIDE_BYTES)
+enum r300_zmask_read_quadrant_arm {
+   R300_ZMASK_READ_QUADRANT_ARM_NEAR = 0,
+   R300_ZMASK_READ_QUADRANT_ARM_FAR,
+   R300_ZMASK_READ_QUADRANT_ARM_COUNT,
+};
+
 #define R300_ZMASK_READ_QUADRANT_VERTEX_BYTES                               \
-   (R300_ZMASK_READ_QUADRANT_COUNT * R300_ZMASK_READ_QUADRANT_VERTEX_SET_BYTES)
+   (R300_ZMASK_READ_QUADRANT_ARM_COUNT * R300_ZMASK_READ_QUADRANT_COUNT *    \
+    R300_ZMASK_READ_QUADRANT_VERTEX_SET_BYTES)
 
 struct r300_zmask_read_quadrant_draw {
    const char *name;
@@ -108,9 +117,9 @@ struct r300_zmask_read_quadrant_draw {
    uint32_t zb_bw_cntl;
    bool wrapped;
    /* Window-space z of the covering primitive and the depth code it
-    * reaches, z * 2^24. */
-   float z;
-   uint32_t depth_code;
+    * reaches, z * 2^24, per arm. */
+   float z[R300_ZMASK_READ_QUADRANT_ARM_COUNT];
+   uint32_t depth_code[R300_ZMASK_READ_QUADRANT_ARM_COUNT];
    /* PFS_PARAM_0 in FP24 (s1e7m16, 1.0 = 0x3f0000), and the B8G8R8A8
     * word the US_OUT_FMT_0 swizzle stores for it: x lands in bits 16-23,
     * y in 8-15, z in 0-7 and w in 24-31. */
@@ -121,13 +130,28 @@ struct r300_zmask_read_quadrant_draw {
 extern const struct r300_zmask_read_quadrant_draw
    r300_zmask_read_quadrant_draws[R300_ZMASK_READ_QUADRANT_COUNT];
 
-/* The four vertex sets in quadrant order, each at its quadrant's z. */
+/* The vertex sets in arm then quadrant order, each at its quadrant's z
+ * for that arm; the set for (arm, quadrant) starts at
+ * r300_zmask_read_quadrant_vertex_offset(arm, quadrant). */
 extern const float r300_zmask_read_quadrant_vertices
-   [R300_ZMASK_READ_QUADRANT_COUNT][R300_ZMASK_READ_QUADRANT_VERTEX_COUNT * 4];
+   [R300_ZMASK_READ_QUADRANT_ARM_COUNT][R300_ZMASK_READ_QUADRANT_COUNT]
+   [R300_ZMASK_READ_QUADRANT_VERTEX_COUNT * 4];
+
+static inline uint32_t
+r300_zmask_read_quadrant_vertex_offset(enum r300_zmask_read_quadrant_arm arm,
+                                       uint32_t quadrant)
+{
+   return ((uint32_t)arm * R300_ZMASK_READ_QUADRANT_COUNT + quadrant) *
+          R300_ZMASK_READ_QUADRANT_VERTEX_SET_BYTES;
+}
+
+const char *
+r300_zmask_read_quadrant_arm_name(enum r300_zmask_read_quadrant_arm arm);
 
 #define R300_ZMASK_READ_QUADRANT_COLOR_SENTINEL 0xa5a5a5a5u
 
 struct r300_zmask_read_quadrant_params {
+   enum r300_zmask_read_quadrant_arm arm;
    const struct r300_zb_depth_surface *surface;
    const struct r300_zmask_layout *zmask_layout;
    uint32_t depth_offset_bytes;
@@ -177,6 +201,7 @@ int r300_zmask_read_quadrant_emit(
  * 64-pixel B8G8R8A8 color pitch, and the surface above at its guard
  * offset.  The caller releases the IB. */
 int r300_zmask_read_quadrant_reference_emit(
+   enum r300_zmask_read_quadrant_arm arm,
    struct r300_zmask_read_quadrant_ib *out);
 
 void r300_zmask_read_quadrant_release(struct r300_zmask_read_quadrant_ib *ib);
@@ -225,7 +250,8 @@ int r300_zmask_read_quadrant_read_state(
 
 /* Holds a stream to the experiment: one whole-level 3D_CLEAR_ZMASK,
  * exactly four draws, each at its table group, plane equations, quadrant
- * scissor, constant, vertex set, LESS test with no depth write, the
+ * scissor, constant, the declared arm's vertex set, LESS test with no
+ * depth write, the
  * clear word and the depth binding, at least one Z-cache flush ahead of
  * every draw, and a stream that ends with compression disabled.  Returns
  * 0 or -EINVAL. */

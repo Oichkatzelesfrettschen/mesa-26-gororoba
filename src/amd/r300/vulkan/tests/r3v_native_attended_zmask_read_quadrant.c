@@ -91,11 +91,25 @@ blake3_hex(const void *data, size_t size, char out[BLAKE3_OUT_LEN * 2 + 1])
    _mesa_blake3_format(out, digest);
 }
 
+static bool
+parse_arm(const char *name, enum r300_zmask_read_quadrant_arm *arm)
+{
+   for (int a = 0; a < R300_ZMASK_READ_QUADRANT_ARM_COUNT; a++) {
+      if (strcmp(name, r300_zmask_read_quadrant_arm_name(
+                          (enum r300_zmask_read_quadrant_arm)a)) == 0) {
+         *arm = (enum r300_zmask_read_quadrant_arm)a;
+         return true;
+      }
+   }
+   return false;
+}
+
 int
 main(int argc, char **argv)
 {
-   if (argc != 2) {
-      fprintf(stderr, "usage: %s <evidence-directory>\n", argv[0]);
+   enum r300_zmask_read_quadrant_arm arm;
+   if (argc != 3 || !parse_arm(argv[2], &arm)) {
+      fprintf(stderr, "usage: %s <evidence-directory> near|far\n", argv[0]);
       return 2;
    }
    const char *evidence_dir = argv[1];
@@ -119,10 +133,10 @@ main(int argc, char **argv)
    for (uint32_t q = 0; q < R300_ZMASK_READ_QUADRANT_COUNT; q++) {
       const struct r300_zmask_read_quadrant_draw *d =
          &r300_zmask_read_quadrant_draws[q];
-      printf("[quadrant] %s origin=(%u,%u) zb_bw_cntl=0x%02x depth=0x%06x "
-             "color=0x%08x\n",
-             d->name, d->origin_x, d->origin_y, d->zb_bw_cntl, d->depth_code,
-             d->color);
+      printf("[quadrant] %s arm=%s origin=(%u,%u) zb_bw_cntl=0x%02x "
+             "depth=0x%06x color=0x%08x\n",
+             d->name, r300_zmask_read_quadrant_arm_name(arm), d->origin_x,
+             d->origin_y, d->zb_bw_cntl, d->depth_code[arm], d->color);
    }
    fflush(stdout);
 
@@ -279,8 +293,8 @@ main(int argc, char **argv)
       fprintf(stderr, "vkBeginCommandBuffer: %d\n", result);
       return finish(OUTCOME_SUBMISSION_REFUSED);
    }
-   result = r3v_native_record_zmask_read_quadrants(cmd, vertex_memory,
-                                                   color_memory, depth_memory);
+   result = r3v_native_record_zmask_read_quadrants(
+      cmd, vertex_memory, color_memory, depth_memory, arm);
    if (result != VK_SUCCESS) {
       fprintf(stderr, "cell recording failed: %d\n", result);
       return finish(OUTCOME_SUBMISSION_REFUSED);
@@ -412,7 +426,7 @@ main(int argc, char **argv)
          "\"reading\": \"%s\", \"colored\": %u, \"sentinel\": %u, "
          "\"foreign\": %u}",
          q == 0 ? "" : ", ", d->name, d->origin_x, d->origin_y,
-         d->zb_bw_cntl, d->depth_code, d->color,
+         d->zb_bw_cntl, d->depth_code[arm], d->color,
          r300_zmask_read_quadrant_reading_name(seen.reading[q]),
          seen.colored[q], seen.sentinel[q], seen.foreign[q]);
       if (written <= 0 || (size_t)written >= sizeof(quadrants_json) - used) {
@@ -428,6 +442,7 @@ main(int argc, char **argv)
       "{\n"
       "  \"schema\": \"r3v-native-zmask-read-quadrant-outcome/1\",\n"
       "  \"verdict\": \"%s\",\n"
+      "  \"arm\": \"%s\",\n"
       "  \"surface\": \"%s\",\n"
       "  \"backing_word\": \"0x%06x%02x\",\n"
       "  \"clear_word\": \"0x%06x%02x\",\n"
@@ -442,7 +457,8 @@ main(int argc, char **argv)
       "  \"depth_changed_bytes\": %llu,\n"
       "  \"quadrants\": [%s]\n"
       "}\n",
-      outcome_names[outcome], surface->name,
+      outcome_names[outcome], r300_zmask_read_quadrant_arm_name(arm),
+      surface->name,
       R300_ZMASK_READ_QUADRANT_BACKING_DEPTH_CODE,
       R300_ZMASK_READ_QUADRANT_BACKING_STENCIL,
       R300_ZMASK_READ_QUADRANT_CLEAR_DEPTH_CODE,

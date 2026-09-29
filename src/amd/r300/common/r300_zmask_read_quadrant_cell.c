@@ -40,7 +40,7 @@ const struct r300_zmask_read_quadrant_draw
       [R300_ZMASK_READ_QUADRANT_A] = {
          .name = "A", .origin_x = 0u, .origin_y = 0u,
          .zb_bw_cntl = 0u, .wrapped = false,
-         .z = 0.0625f, .depth_code = 0x100000u,
+         .z = { 0.0625f, 0.1875f }, .depth_code = { 0x100000u, 0x300000u },
          .constant = { FP24_ONE, 0u, 0u, FP24_ONE },
          .color = 0xffff0000u,
       },
@@ -49,14 +49,14 @@ const struct r300_zmask_read_quadrant_draw
          .zb_bw_cntl = R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE |
                        R300_WR_COMP_ENABLE,
          .wrapped = true,
-         .z = 0.25f, .depth_code = 0x400000u,
+         .z = { 0.25f, 0.75f }, .depth_code = { 0x400000u, 0xc00000u },
          .constant = { 0u, FP24_ONE, 0u, FP24_ONE },
          .color = 0xff00ff00u,
       },
       [R300_ZMASK_READ_QUADRANT_C] = {
          .name = "C", .origin_x = 0u, .origin_y = 32u,
          .zb_bw_cntl = R300_FAST_FILL_ENABLE, .wrapped = true,
-         .z = 0.25f, .depth_code = 0x400000u,
+         .z = { 0.25f, 0.75f }, .depth_code = { 0x400000u, 0xc00000u },
          .constant = { 0u, 0u, FP24_ONE, FP24_ONE },
          .color = 0xff0000ffu,
       },
@@ -64,7 +64,7 @@ const struct r300_zmask_read_quadrant_draw
          .name = "D", .origin_x = 32u, .origin_y = 32u,
          .zb_bw_cntl = R300_FAST_FILL_ENABLE | R300_RD_COMP_ENABLE,
          .wrapped = true,
-         .z = 0.25f, .depth_code = 0x400000u,
+         .z = { 0.25f, 0.75f }, .depth_code = { 0x400000u, 0xc00000u },
          .constant = { FP24_ONE, FP24_ONE, 0u, FP24_ONE },
          .color = 0xffffff00u,
       },
@@ -81,12 +81,35 @@ const struct r300_zmask_read_quadrant_draw
    }
 
 const float r300_zmask_read_quadrant_vertices
-   [R300_ZMASK_READ_QUADRANT_COUNT][R300_ZMASK_READ_QUADRANT_VERTEX_COUNT * 4] = {
-      QUADRANT_VERTICES(0.0625f),
-      QUADRANT_VERTICES(0.25f),
-      QUADRANT_VERTICES(0.25f),
-      QUADRANT_VERTICES(0.25f),
+   [R300_ZMASK_READ_QUADRANT_ARM_COUNT][R300_ZMASK_READ_QUADRANT_COUNT]
+   [R300_ZMASK_READ_QUADRANT_VERTEX_COUNT * 4] = {
+      [R300_ZMASK_READ_QUADRANT_ARM_NEAR] = {
+         QUADRANT_VERTICES(0.0625f),
+         QUADRANT_VERTICES(0.25f),
+         QUADRANT_VERTICES(0.25f),
+         QUADRANT_VERTICES(0.25f),
+      },
+      [R300_ZMASK_READ_QUADRANT_ARM_FAR] = {
+         QUADRANT_VERTICES(0.1875f),
+         QUADRANT_VERTICES(0.75f),
+         QUADRANT_VERTICES(0.75f),
+         QUADRANT_VERTICES(0.75f),
+      },
    };
+
+const char *
+r300_zmask_read_quadrant_arm_name(enum r300_zmask_read_quadrant_arm arm)
+{
+   switch (arm) {
+   case R300_ZMASK_READ_QUADRANT_ARM_NEAR:
+      return "near";
+   case R300_ZMASK_READ_QUADRANT_ARM_FAR:
+      return "far";
+   case R300_ZMASK_READ_QUADRANT_ARM_COUNT:
+      break;
+   }
+   return NULL;
+}
 
 int
 r300_zmask_read_quadrant_surface(
@@ -211,13 +234,14 @@ emit_scissor(struct r300_pm4_builder *b,
 
 static void
 emit_quadrant_draw(struct r300_pm4_builder *b,
-                   struct r300_zmask_read_quadrant_ib *out, uint32_t quadrant)
+                   struct r300_zmask_read_quadrant_ib *out,
+                   enum r300_zmask_read_quadrant_arm arm, uint32_t quadrant)
 {
    const uint32_t vbpntr[3] = {
       1u | R300_VC_FORCE_PREFETCH,
       R300_VBPNTR_SIZE0(R300_ZMASK_READ_QUADRANT_VERTEX_STRIDE_BYTES) |
          R300_VBPNTR_STRIDE0(R300_ZMASK_READ_QUADRANT_VERTEX_STRIDE_BYTES),
-      quadrant * R300_ZMASK_READ_QUADRANT_VERTEX_SET_BYTES,
+      r300_zmask_read_quadrant_vertex_offset(arm, quadrant),
    };
    r300_pm4_packet3(b, R300_PACKET3_3D_LOAD_VBPNTR, vbpntr,
                     ARRAY_SIZE(vbpntr));
@@ -237,7 +261,8 @@ emit_into(const struct r300_zmask_read_quadrant_params *params,
 {
    const struct r300_fragment_binary *fs = params->fragment_binary;
    if (fs == NULL || !fs->validated || params->first_draw_contract == NULL ||
-       params->surface == NULL || params->zmask_layout == NULL)
+       params->surface == NULL || params->zmask_layout == NULL ||
+       r300_zmask_read_quadrant_arm_name(params->arm) == NULL)
       return -EINVAL;
    const struct r300_zb_depth_surface *surface = params->surface;
    if (surface->width != R300_ZMASK_READ_QUADRANT_TARGET_WIDTH ||
@@ -331,7 +356,7 @@ emit_into(const struct r300_zmask_read_quadrant_params *params,
       r300_pm4_packet0(&b, R300_PFS_PARAM_0_X, draw->constant, 4);
 
       if (!draw->wrapped) {
-         emit_quadrant_draw(&b, out, q);
+         emit_quadrant_draw(&b, out, params->arm, q);
          r300_pm4_reg(&b, R300_ZB_ZCACHE_CTLSTAT, ZCACHE_FLUSH_AND_FREE);
          continue;
       }
@@ -348,7 +373,7 @@ emit_into(const struct r300_zmask_read_quadrant_params *params,
          break;
       }
       r300_pm4_block(&b, plan.words, plan.begin_dword_count);
-      emit_quadrant_draw(&b, out, q);
+      emit_quadrant_draw(&b, out, params->arm, q);
       r300_pm4_block(&b, r300_zmask_materialize_end_words(&plan),
                      r300_zmask_materialize_end_dword_count(&plan));
    }
@@ -403,6 +428,7 @@ r300_zmask_read_quadrant_release(struct r300_zmask_read_quadrant_ib *ib)
 
 int
 r300_zmask_read_quadrant_reference_emit(
+   enum r300_zmask_read_quadrant_arm arm,
    struct r300_zmask_read_quadrant_ib *out)
 {
    if (out == NULL)
@@ -442,6 +468,7 @@ r300_zmask_read_quadrant_reference_emit(
    }
 
    const struct r300_zmask_read_quadrant_params params = {
+      .arm = arm,
       .surface = surface,
       .zmask_layout = &zmask,
       .depth_offset_bytes = (uint32_t)layout.base_offset_bytes,
@@ -599,7 +626,8 @@ r300_zmask_read_quadrant_check_state(
    uint32_t dwords)
 {
    if (params == NULL || params->surface == NULL ||
-       params->zmask_layout == NULL)
+       params->zmask_layout == NULL ||
+       r300_zmask_read_quadrant_arm_name(params->arm) == NULL)
       return -EINVAL;
    struct r300_zmask_read_quadrant_stream_state state;
    if (r300_zmask_read_quadrant_read_state(ib, dwords, &state) != 0)
@@ -647,7 +675,8 @@ r300_zmask_read_quadrant_check_state(
           s->sc_scissors_tl != tl || s->sc_scissors_br != br ||
           memcmp(s->pfs_param_0, draw->constant, sizeof(draw->constant)) !=
              0 ||
-          s->vertex_offset != q * R300_ZMASK_READ_QUADRANT_VERTEX_SET_BYTES ||
+          s->vertex_offset !=
+             r300_zmask_read_quadrant_vertex_offset(params->arm, q) ||
           s->zcache_flushes_before == 0u)
          return -EINVAL;
    }

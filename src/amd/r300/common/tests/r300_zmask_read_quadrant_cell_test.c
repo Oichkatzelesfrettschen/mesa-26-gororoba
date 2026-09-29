@@ -15,6 +15,7 @@
 
 #include "r300_pm4_builder.h"
 #include "r300_reg.h"
+#include "r300_tcl_bypass_triangle.h"
 #include "r300_zb_hyperz_admission.h"
 #include "r300_zmask_read_quadrant_cell.h"
 
@@ -132,7 +133,8 @@ main(void)
           "envelope at the lifecycle's ZB_DEPTHOFFSET");
 
    struct r300_zmask_read_quadrant_ib cell;
-   expect(r300_zmask_read_quadrant_reference_emit(&cell) == 0,
+   expect(r300_zmask_read_quadrant_reference_emit(
+             R300_ZMASK_READ_QUADRANT_ARM_NEAR, &cell) == 0,
           "reference cell emits");
    if (failures != 0)
       return 1;
@@ -140,6 +142,7 @@ main(void)
           "relocation sites");
 
    const struct r300_zmask_read_quadrant_params params = {
+      .arm = R300_ZMASK_READ_QUADRANT_ARM_NEAR,
       .surface = surface,
       .zmask_layout = &zmask_layout,
       .depth_offset_bytes = (uint32_t)depth_layout.base_offset_bytes,
@@ -181,6 +184,59 @@ main(void)
           "HyperZ walker refuses the stream without ownership");
    expect(kernel_admits_every_register(cell.ib, cell.ib_size_dwords),
           "every PACKET0 register inside the kernel authority");
+
+   /* The near arm is the stream RS485M executed; its digest is the one the
+    * sealed prediction and the retained bundle name. */
+   char digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(cell.ib, cell.ib_size_dwords, digest);
+   expect(cell.ib_size_dwords == 385u &&
+             strcmp(digest, "edb292fad46ca951fc837d279a8cd8c0dfa01aa3e1b0"
+                            "2866bd5fab9d2d0fdce3") == 0,
+          "near-arm stream keeps the executed digest");
+
+   /* The far arm: same shape, its own vertex sets, its own digest, and
+    * each arm's check refuses the other arm's stream. */
+   struct r300_zmask_read_quadrant_ib far;
+   expect(r300_zmask_read_quadrant_reference_emit(
+             R300_ZMASK_READ_QUADRANT_ARM_FAR, &far) == 0,
+          "far cell emits");
+   const struct r300_zmask_read_quadrant_params far_params = {
+      .arm = R300_ZMASK_READ_QUADRANT_ARM_FAR,
+      .surface = surface,
+      .zmask_layout = &zmask_layout,
+      .depth_offset_bytes = (uint32_t)depth_layout.base_offset_bytes,
+   };
+   expect(r300_zmask_read_quadrant_validate_reloc_sites(&far) == 0 &&
+             r300_zmask_read_quadrant_check_state(&far_params, far.ib,
+                                                  far.ib_size_dwords) == 0,
+          "far cell passes its own state check");
+   expect(r300_zmask_read_quadrant_check_state(&params, far.ib,
+                                               far.ib_size_dwords) != 0 &&
+             r300_zmask_read_quadrant_check_state(&far_params, cell.ib,
+                                                  cell.ib_size_dwords) != 0,
+          "each arm refuses the other arm's stream");
+   char far_digest[2 * R300_TRIANGLE_DIGEST_SIZE + 1];
+   r300_triangle_ib_digest_hex(far.ib, far.ib_size_dwords, far_digest);
+   expect(far.ib_size_dwords == cell.ib_size_dwords &&
+             strcmp(far_digest, digest) != 0,
+          "far arm has the near shape and its own digest");
+   printf("far-arm ib_blake3=%s\n", far_digest);
+   r300_zmask_read_quadrant_release(&far);
+
+   /* Every far depth fails LESS against both candidate references for
+    * the wrapped draws, and against the backing for A. */
+   for (uint32_t q = 0; q < 4u; q++) {
+      const struct r300_zmask_read_quadrant_draw *d =
+         &r300_zmask_read_quadrant_draws[q];
+      const uint32_t far_code = d->depth_code[R300_ZMASK_READ_QUADRANT_ARM_FAR];
+      expect(far_code >= R300_ZMASK_READ_QUADRANT_BACKING_DEPTH_CODE &&
+                (!d->wrapped ||
+                 far_code >= R300_ZMASK_READ_QUADRANT_CLEAR_DEPTH_CODE),
+             "far depths fail their references");
+      expect((uint32_t)(d->z[R300_ZMASK_READ_QUADRANT_ARM_FAR] * 16777216.0f) ==
+                far_code,
+             "far z names its depth code");
+   }
 
    /* Known-bad mutations, one per rule. */
    expect(check_mutation(&cell, &params, R300_ZB_BW_CNTL, 0x04u, 1u, 0x0cu,

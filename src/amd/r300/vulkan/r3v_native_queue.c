@@ -894,6 +894,7 @@ r3v_native_cell_geometry_unfrozen(
       if (r300_zmask_read_quadrant_surface(&surface, &layout, &zmask) != 0)
          return true;
       const struct r300_zmask_read_quadrant_params declared = {
+         .arm = cmd_buffer->zmask_read_quadrant_arm,
          .surface = surface,
          .zmask_layout = &zmask,
          .depth_offset_bytes = (uint32_t)layout.base_offset_bytes,
