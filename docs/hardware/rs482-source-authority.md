@@ -238,9 +238,10 @@ paired with `PKGBUILD_xf86-video-ati-rs485m`; mixed pairs and contract/name
 mismatches fail. Repository-name migration preserves historical v2 captures.
 The authority table names the RS485M repositories after the source and
 package identity cutover. Historical v2 manifests retain their original
-slugs. It rejects malformed or incorrectly sized Git and SHA-256 identities, empty or nonhexadecimal Build IDs, a kernel manifest
-without the module Build ID, a Radeon DDX manifest without DDX provenance, and
-a post-cutover kernel manifest without equivalence evidence. The
+slugs. It rejects malformed or incorrectly sized Git and SHA-256 identities,
+empty or nonhexadecimal Build IDs, a kernel manifest without the module Build
+ID, a Radeon DDX manifest without DDX provenance, and a post-cutover kernel
+manifest without equivalence evidence. The
 [`jsonschema`](https://github.com/python-jsonschema/jsonschema) 4.26.0 package
 implements the Draft 2020-12 validation used by this test and supports every
 repository Python target. The requirements file pins this sole direct Python
