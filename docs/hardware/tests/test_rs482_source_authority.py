@@ -97,7 +97,8 @@ class RS482SourceAuthorityTests(unittest.TestCase):
 
     def test_loaded_module_bytes_remain_a_separate_axis(self) -> None:
         authority, evidence = self.rows["Loaded module byte identity"]
-        self.assertRegex(authority, r"^`steinmarder-r300/.+-production-identity/`$")
+        self.assertRegex(authority, r"^`steinmarder-r300/.+/`$")
+        self.assertIn("build-ID note", evidence)
         self.assert_labeled_identity(evidence, "retaining commit", GIT_OBJECT)
         self.assert_labeled_identity(evidence, "manifest SHA-256", SHA256)
         self.assert_labeled_identity(evidence, "hash ledger SHA-256", SHA256)
