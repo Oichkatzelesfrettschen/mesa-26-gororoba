@@ -75,23 +75,34 @@ The current identities stay on separate axes:
 
 | Identity axis | Authority | Exact identity and claim boundary |
 | --- | --- | --- |
-| Modified source | `linux-radeon-gororoba` | current main commit `0598947dbffe97ec03119d54b3fe41ad8775c6a8`, driver tree `e3eb7f883f27123adb5dccb42a758ee4a384fcc8`; the driver tree equals the package pin, main advances only in documentation, and main carries no package or runtime claim |
-| Active package recipe | `radeon-custom` 0.8.21-1 | package commit `00b0a71f26205fc1b3e3ea91a193a5db19a08b44`, recipe tree `6d80ac59c152f9f085facb9db3ff05fe2ef5a71e`, `PKGBUILD` blob `b8fe6949a25a9f4b1a8c18f16dd48bbccba3551b`, source identity blob `94d718847f53428b381ef6c690ea0aae20a7dd4c`; the recipe pins signed source tag object `53a055cbdbac3cda5fc5648b91a0d33ac191d605`, source commit `3e0e85ecb516e1523c99e84cd3f58a985a55b026`, and driver tree `e3eb7f883f27123adb5dccb42a758ee4a384fcc8` |
-| Target deployment runtime | `steinmarder-r300/results/rs485m-radeon-unified-0.8.21-1-deployment-runtime/` | retaining commit `8070fac12cacc41f8d879f68e508fd81cf3c1197`, manifest SHA-256 `6e3978ac138839b92f831650a727daecdf6810cfe009ae97dc42973ae042a3f5`, hash ledger SHA-256 `6c496a4f19eb49d3bc94b74ae58c1ace4f7ed84e2f8a79593dd326c3d0d508bc`; records production packages 0.8.21-1 installed from the protected gate artifact, on-disk source commit `3e0e85ecb516e1523c99e84cd3f58a985a55b026`, driver tree `e3eb7f883f27123adb5dccb42a758ee4a384fcc8`, and matching loaded/on-disk srcversion `047F8935D11DA0AA57B72CB`; DKMS modules serve 7.2.5-1-cachyos and 6.18.50-1-cachyos-lts, both boot entries verify their pinned image digests, and the boot ID changes across the reboot and stays stable across the read-only capture |
-| Loaded module byte identity | `steinmarder-r300/results/r3v-zmask-public-lifecycle-rs485m-53d8342-silicon-3064aff97/` | retaining commit `b5c1fa23f18fe5d72c744b7f0a466e1be1f351e4`, manifest SHA-256 `2c36f50513cad706ac25b0dfe61a733c91876747e7c4a46a5552f0acccfcc4fa`, hash ledger SHA-256 `c51721e4bdf412d2a8e02a3a0779863c8b70f8b9005eb00c69e6d6f70c125556`, compressed module SHA-256 `74175bc8ab43b6dc89b7f174924a28e0dca7630668f469b68543dd04c2b42a00`, GNU Build ID `18ab65bacbb629910bb9457a8897ccb9c0b37497`, and srcversion `047F8935D11DA0AA57B72CB`; `capture_identity.json` joins the loaded module's build-ID note to the on-disk 0.8.21 module, and no newer retained bundle records the loaded module bytes |
+| Modified source | `linux-radeon-gororoba` | current main commit `db5645b2be0d0d82628a4520523304d49f653028`, driver tree `d651284eca5292ccb16520886d1a1e80be034107`; main equals the package pin, and main carries no package or runtime claim |
+| Active package recipe | `radeon-custom` 0.8.23-1 | package commit `a414ae8e25edb095aa4c2f0d1b58b6b0134dc9ea`, recipe tree `021282f3d1946893822b546bc104cf017d6b813a`, `PKGBUILD` blob `692665e2a6180176a33f0c59383ee955603bd801`, source identity blob `acbeadf606a78e4021497613f76fbf33aa21e792`; the recipe pins signed source tag object `cf117c8e4ab7356333871c41deaadc1b8c9d6a31`, source commit `db5645b2be0d0d82628a4520523304d49f653028`, and driver tree `d651284eca5292ccb16520886d1a1e80be034107` |
+| Target deployment runtime | `steinmarder-r300/results/rs485m-radeon-unified-0.8.23-1-deployment-runtime/` | retaining commit `62b11bdffc0a5851ec205bd4b3c4085dd8945d51`, manifest SHA-256 `0358f24f6b07e2b3c85fba819b2b6050270f2722094bde49263150dafe5f88b7`, hash ledger SHA-256 `3588c71bb4cfcf9a1ef8f7f23864d1278935ecb1dd342dc29eed10dd75a127b6`; records production and board policy packages 0.8.23-1 installed from the protected gate artifact, on-disk source commit `db5645b2be0d0d82628a4520523304d49f653028`, driver tree `d651284eca5292ccb16520886d1a1e80be034107`, and matching loaded/on-disk srcversion `B24A6B6AD8027D6C0E37B2A`; DKMS modules serve 7.2.5-1-cachyos and 6.18.50-1-cachyos-lts, both boot entries verify their pinned image digests, and the boot ID changes across the reboot and stays stable across the read-only capture |
+| Loaded module byte identity | `steinmarder-r300/results/r3v-zmask-public-lifecycle-rs485m-53d8342-silicon-radeon-0823/` | retaining commit `62b11bdffc0a5851ec205bd4b3c4085dd8945d51`, manifest SHA-256 `a8ac597bbab28ce43bbea93d8d4f93923fd25ec226e24f12c0cb7981c26a7336`, hash ledger SHA-256 `9270ee6788117d9cf5dc0ff9c98026db5ed638c86f631b886fc7f49514897648`, compressed module SHA-256 `1d0fb2562a6d445bdc1de1f8e47872971cdacbfc0f0b1f81a4a20559e5368360`, GNU Build ID `151b9a4c4f0c249ca4555ffe46c9d10cba732132`, and srcversion `B24A6B6AD8027D6C0E37B2A`; `capture_identity.json` joins the loaded module's build-ID note to the on-disk 0.8.23 module, and no newer retained bundle records the loaded module bytes |
 | Parked-device behavior | `steinmarder-r300/src/re/r300/results/cachyos_vostro1000_rs482_parked_entry_contract_matrix_20260805T055406Z/` | retaining commit `baa6b2d496c52392c0ecb5e18306db02e9dfd6cf`, outcome SHA-256 `f053e84ec97332abb5ec9c0611ac84d988c5070bdd2bc28eb22d1e10da82c243`, hash ledger SHA-256 `ab36a1a974679a8f9cb8c7da5bf0fd4452dbba3a5ca6151f5001841d926d96ae`; measures the 0.6-1 parked-entry contract, while later package and deployment identities carry no newer parked-device run |
 
 <!-- markdownlint-enable MD013 -->
 
-The active 0.8.21-1 recipe and on-disk module identify source commit
-`3e0e85ecb516e1523c99e84cd3f58a985a55b026`. The installed production package
-is the protected gate artifact: the GitHub-hosted gate built it, the dependent
-target run compiled it against the running kernel, and the target installed
-those exact bytes and rebooted into them. The loaded module srcversion matches
-the on-disk module. The ZMASK lifecycle capture on the same boot records the
-loaded build-ID note, so loaded byte identity joins the deployment through
-the lifecycle bundle rather than the deployment capture itself. GPU workloads
-retain separate evidence requirements.
+The active 0.8.23-1 recipe and on-disk module identify source commit
+`db5645b2be0d0d82628a4520523304d49f653028`. The installed production and board
+policy packages are the protected gate artifact: the GitHub-hosted gate built
+them, DKMS compiled the module against both target kernels inside the pacman
+transaction, and the target rebooted into those exact bytes. The loaded module
+srcversion matches the on-disk module. The ZMASK lifecycle capture on the same
+boot records the loaded build-ID note, so loaded byte identity joins the
+deployment through the lifecycle bundle rather than the deployment capture
+itself. GPU workloads retain separate evidence requirements.
+
+The 0.8.21-1 deployment record remains in
+`steinmarder-r300/results/rs485m-radeon-unified-0.8.21-1-deployment-runtime/`
+at retaining commit `8070fac12cacc41f8d879f68e508fd81cf3c1197`, manifest
+SHA-256 `6e3978ac138839b92f831650a727daecdf6810cfe009ae97dc42973ae042a3f5`,
+and hash ledger SHA-256
+`6c496a4f19eb49d3bc94b74ae58c1ace4f7ed84e2f8a79593dd326c3d0d508bc`; it
+records srcversion `047F8935D11DA0AA57B72CB`. The 0.8.22-1 package ran without
+a deployment capture; its public ZMASK lifecycle bundle
+`steinmarder-r300/results/r3v-zmask-public-lifecycle-rs485m-53d8342-silicon-3f1bfe2bd/`
+records srcversion `0547E1123C7ED0BCEBE5CF1`.
 
 The 0.8.19-1 deployment record remains in
 `steinmarder-r300/results/radeon_unified_0819_production_deployment_runtime_vostro1000_rs485m_5974/`
@@ -281,7 +292,7 @@ installed package invalidates the loaded deployment identity until corrected.
 `docs/hardware/vostro1000-kernel-modules.md` tracks stable module mechanisms
 and ownership rather than changing package versions.
 
-The retained 0.8.21-1 observation closes package-version and srcversion
+The retained 0.8.23-1 observation closes package-version and srcversion
 correspondence for its recorded boot. The observation leaves loaded byte
 identity, reboot activation, RB2D execution, reset recovery, and API conformance
 as separately qualified surfaces. Any package, module, boot, or policy change
