@@ -367,6 +367,18 @@ teardown_fs(struct r300_fragment_program_compiler *c,
    rc_destroy_regalloc_state(rs);
 }
 
+/* Count total instructions in the compiled program. */
+static unsigned
+count_total_instructions(struct radeon_compiler *c)
+{
+   unsigned count = 0;
+   for (struct rc_instruction *inst = c->Program.Instructions.Next;
+        inst != &c->Program.Instructions; inst = inst->Next) {
+      count++;
+   }
+   return count;
+}
+
 /* Count emitted instructions of a given RC opcode. */
 static unsigned
 count_opcode(struct radeon_compiler *c, rc_opcode op)
@@ -591,6 +603,241 @@ case_boolean_logic_not_dummy_shaded(void)
          "32-bit data ixor with no FP24 form is still rejected to a dummy shader");
 }
 
+/* Specimen 2: Single-use distributive factoring
+ * y0 = (a & b) | (a & c)
+ * Generic nir_opt_algebraic rewrites to a & (b | c).
+ */
+static nir_shader *
+build_fs_distributive_single_use(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                                  "r300_nir_fs_distrib_single");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+   nir_variable *in0 = nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_v");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   nir_def *a = nir_flt(&b, nir_channel(&b, v, 0), nir_imm_float(&b, 1.0f));
+   nir_def *b_val = nir_flt(&b, nir_channel(&b, v, 1), nir_imm_float(&b, 2.0f));
+   nir_def *c = nir_flt(&b, nir_channel(&b, v, 2), nir_imm_float(&b, 3.0f));
+
+   nir_def *ab = nir_iand(&b, a, b_val);
+   nir_def *ac = nir_iand(&b, a, c);
+   nir_def *y0 = nir_ior(&b, ab, ac);
+   nir_def *f = nir_b2f32(&b, y0);
+   nir_store_var(&b, out, nir_vec4(&b, f, f, f, f), 0xf);
+   return b.shader;
+}
+
+/* Specimen 3: Simple absorption
+ * y0 = a | (a & b)
+ * Generic nir_opt_algebraic rewrites to a.
+ */
+static nir_shader *
+build_fs_absorption(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                                  "r300_nir_fs_absorption");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+   nir_variable *in0 = nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_v");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   nir_def *a = nir_flt(&b, nir_channel(&b, v, 0), nir_imm_float(&b, 1.0f));
+   nir_def *b_val = nir_flt(&b, nir_channel(&b, v, 1), nir_imm_float(&b, 2.0f));
+
+   nir_def *ab = nir_iand(&b, a, b_val);
+   nir_def *y0 = nir_ior(&b, a, ab);
+   nir_def *f = nir_b2f32(&b, y0);
+   nir_store_var(&b, out, nir_vec4(&b, f, f, f, f), 0xf);
+   return b.shader;
+}
+
+/* Specimen 4 & 5:
+ * p  = a & b
+ * y0 = p | (a & c)
+ * y1 = p | (a & d)
+ *
+ * If !p_observable (Specimen 4):
+ *   p has fanout 2 (used only by y0 and y1).
+ *   r300_nir_opt_shared_bool factors both arms:
+ *     y0 = a & (b | c)
+ *     y1 = a & (b | d)
+ *   p, a&c, a&d are removed. Ops drop from 5 to 4.
+ *
+ * If p_observable (Specimen 5):
+ *   y2 = p is also stored to gl_FragColor.z.
+ *   p has external fanout.
+ *   r300_nir_opt_shared_bool fails closed (preserves 5 operations floor).
+ */
+static nir_shader *
+build_fs_shared_boolean_factoring(bool p_observable)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options,
+      p_observable ? "r300_nir_fs_shared_bool_obs" : "r300_nir_fs_shared_bool");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+   nir_variable *in0 = nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_v");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   nir_def *a = nir_flt(&b, nir_channel(&b, v, 0), nir_imm_float(&b, 1.0f));
+   nir_def *b_val = nir_flt(&b, nir_channel(&b, v, 1), nir_imm_float(&b, 2.0f));
+   nir_def *c = nir_flt(&b, nir_channel(&b, v, 2), nir_imm_float(&b, 3.0f));
+   nir_def *d = nir_flt(&b, nir_channel(&b, v, 3), nir_imm_float(&b, 4.0f));
+
+   nir_def *p = nir_iand(&b, a, b_val);
+   nir_def *ac = nir_iand(&b, a, c);
+   nir_def *ad = nir_iand(&b, a, d);
+
+   nir_def *y0 = nir_ior(&b, p, ac);
+   nir_def *y1 = nir_ior(&b, p, ad);
+
+   nir_def *f0 = nir_b2f32(&b, y0);
+   nir_def *f1 = nir_b2f32(&b, y1);
+   nir_def *f2 = p_observable ? nir_b2f32(&b, p) : nir_imm_float(&b, 0.0f);
+   nir_def *f3 = nir_imm_float(&b, 1.0f);
+
+   nir_store_var(&b, out, nir_vec4(&b, f0, f1, f2, f3), 0xf);
+   return b.shader;
+}
+
+/* Specimen 6: XOR with both operands available
+ * y = x ^ y (boolean)
+ */
+static nir_shader *
+build_fs_xor_available(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                                  "r300_nir_fs_xor_avail");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+   nir_variable *in0 = nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_v");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   nir_def *a = nir_flt(&b, nir_channel(&b, v, 0), nir_imm_float(&b, 1.0f));
+   nir_def *b_val = nir_flt(&b, nir_channel(&b, v, 1), nir_imm_float(&b, 2.0f));
+   nir_def *x = nir_ixor(&b, a, b_val);
+   nir_def *f = nir_b2f32(&b, x);
+   nir_store_var(&b, out, nir_vec4(&b, f, f, f, f), 0xf);
+   return b.shader;
+}
+
+/* Specimen 7: XOR with newly produced operand (scheduling candidate)
+ * a = in.x < 1.0
+ * b = (in.y < 2.0) & (in.z < 3.0)  -- newly produced immediately before XOR
+ * y = a ^ b
+ */
+static nir_shader *
+build_fs_xor_newly_produced(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT, &options,
+                                                  "r300_nir_fs_xor_new");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+   nir_variable *in0 = nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_v");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   nir_def *a = nir_flt(&b, nir_channel(&b, v, 0), nir_imm_float(&b, 1.0f));
+   nir_def *t1 = nir_flt(&b, nir_channel(&b, v, 1), nir_imm_float(&b, 2.0f));
+   nir_def *t2 = nir_flt(&b, nir_channel(&b, v, 2), nir_imm_float(&b, 3.0f));
+   nir_def *b_new = nir_iand(&b, t1, t2);
+   nir_def *x = nir_ixor(&b, a, b_new);
+   nir_def *f = nir_b2f32(&b, x);
+   nir_store_var(&b, out, nir_vec4(&b, f, f, f, f), 0xf);
+   return b.shader;
+}
+
+static void
+case_distributive_and_absorption(void)
+{
+   struct r300_fragment_program_compiler c;
+   struct rc_regalloc_state rs;
+
+   run_fs(&c, &rs, build_fs_distributive_single_use());
+   CHECK(!c.Base.Error, "single-use distributive fragment compiles without error");
+   teardown_fs(&c, &rs);
+
+   run_fs(&c, &rs, build_fs_absorption());
+   CHECK(!c.Base.Error, "absorption fragment compiles without error");
+   teardown_fs(&c, &rs);
+}
+
+static void
+case_shared_boolean_factoring(void)
+{
+   struct r300_fragment_program_compiler c_factored;
+   struct rc_regalloc_state rs_factored;
+   run_fs(&c_factored, &rs_factored, build_fs_shared_boolean_factoring(false));
+   CHECK(!c_factored.Base.Error, "shared boolean factoring compiles without error");
+   unsigned insts_factored = count_total_instructions(&c_factored.Base);
+
+   if (getenv("R300_FS_HARNESS_DUMP"))
+      dump_program(&c_factored.Base, "shared boolean factored");
+
+   struct r300_fragment_program_compiler c_obs;
+   struct rc_regalloc_state rs_obs;
+   run_fs(&c_obs, &rs_obs, build_fs_shared_boolean_factoring(true));
+   CHECK(!c_obs.Base.Error, "shared boolean with observable p compiles without error");
+   unsigned insts_obs = count_total_instructions(&c_obs.Base);
+
+   if (getenv("R300_FS_HARNESS_DUMP"))
+      dump_program(&c_obs.Base, "shared boolean observable (counterexample)");
+
+   printf("    shared boolean factored inst count: %u, observable inst count: %u\n",
+          insts_factored, insts_obs);
+   CHECK(insts_factored <= insts_obs,
+         "joint factoring achieves <= instruction count compared to observable graph");
+
+   teardown_fs(&c_factored, &rs_factored);
+   teardown_fs(&c_obs, &rs_obs);
+}
+
+static void
+case_xor_scheduling(void)
+{
+   struct r300_fragment_program_compiler c;
+   struct rc_regalloc_state rs;
+
+   run_fs(&c, &rs, build_fs_xor_available());
+   CHECK(!c.Base.Error, "xor available fragment compiles without error");
+   teardown_fs(&c, &rs);
+
+   run_fs(&c, &rs, build_fs_xor_newly_produced());
+   CHECK(!c.Base.Error, "xor newly produced fragment compiles without error");
+   teardown_fs(&c, &rs);
+}
+
 int
 main(void)
 {
@@ -601,6 +848,9 @@ main(void)
    case_textureproj_uses_hw_txp();
    case_textureproj_bias_lowers_to_fp24_rcp();
    case_boolean_logic_not_dummy_shaded();
+   case_distributive_and_absorption();
+   case_shared_boolean_factoring();
+   case_xor_scheduling();
 
    if (g_failures) {
       printf("FAILED: %u check(s)\n", g_failures);

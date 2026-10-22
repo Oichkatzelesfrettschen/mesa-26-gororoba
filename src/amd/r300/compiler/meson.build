@@ -56,6 +56,7 @@ files_r300_compiler = files(
   'r300_nir_fold_periodic_loops.c',
   'r300_nir.h',
   'r300_nir_lower_bitwise_to_arith.c',
+  'r300_nir_opt_shared_bool.c',
   'r300_nir_lower_f2i_epsilon.c',
   'r300_nir_lower_ieee16.c',
   'r300_nir_lower_vs_system_values.c',
@@ -110,6 +111,18 @@ libr300_compiler = static_library(
   gnu_symbol_visibility : 'hidden',
   dependencies : [idep_mesautil, idep_nir],
 )
+
+if with_tests
+  test(
+    'r300-boolean-rules',
+    executable(
+      'r300_boolean_rules_test',
+      files('tests/test_r300_boolean_rules.c'),
+      gnu_symbol_visibility : 'hidden',
+    ),
+    suite : ['r300'],
+  )
+endif
 
 # Source registration and declaration reach run from common.  This artifact
 # leg independently proves that the named common and compiler symbols are
