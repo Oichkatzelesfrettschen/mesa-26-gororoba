@@ -74,26 +74,47 @@ r300_grid_linear_index_exact(uint64_t total_invocations)
 }
 
 /* True when a * gid + b stays inside the FP24 exact-integer window for
- * every gid in [0, total_invocations - 1].  Integer products and sums in
- * FP24 are exact exactly while the result remains representable, so checking
- * the maximum value suffices.  A zero stride is a literal constant-value
- * affine, not an absent stride; only b needs the FP24 value bound. */
+ * every gid in [0, total_invocations - 1].
+ *
+ * For unaligned integers, the product must stay at or below 2^17 (131072).
+ * However, floating-point numbers represent any value of the form n = 2^k * m
+ * exactly as long as |m| <= 2^17 and the exponent bias does not exceed the
+ * normal range (2^65).  When stride and offset share a power-of-two factor
+ * 2^k:
+ *    a * gid + b = 2^k * (a' * gid + b')
+ * the calculation is exact provided the unscaled term a' * gid + b' stays
+ * within the 17-bit significand window [0, 2^17] and k <= 48.
+ * For example, stride = 4, offset = 0 admits 131073 invocations
+ * (maximum product 4 * 131072 = 524288) with bit-exact float representation. */
 static inline bool
 r300_grid_strided_index_exact(uint64_t total_invocations,
-                                uint32_t stride, uint32_t offset)
+                              uint32_t stride, uint32_t offset)
 {
    if (total_invocations == 0)
       return false;
-   if (offset > R300_FP24_EXACT_INT_CEILING)
-      return false;
    if (stride == 0)
-      return true;
+      return offset <= R300_FP24_EXACT_INT_CEILING;
 
-   /* Compare in the bounded domain instead of materializing
-    * stride * (total - 1) + offset.  A hostile uint64_t invocation count
-    * could overflow that product and wrap back into the exact window. */
+   /* Compare in the bounded unscaled domain.  Extract common power-of-two
+    * factor 2^k between stride and offset. */
+   unsigned shift = 0;
+   if (offset == 0) {
+      shift = __builtin_ctz(stride);
+   } else {
+      shift = __builtin_ctz(stride | offset);
+   }
+
+   if (shift > 48)
+      shift = 48;
+
+   uint32_t reduced_stride = stride >> shift;
+   uint32_t reduced_offset = offset >> shift;
+
+   if (reduced_offset > R300_FP24_EXACT_INT_CEILING)
+      return false;
+
    return total_invocations - 1 <=
-          (R300_FP24_EXACT_INT_CEILING - offset) / stride;
+          (R300_FP24_EXACT_INT_CEILING - reduced_offset) / reduced_stride;
 }
 
 /* Admission guard dispatched on index class.  Position-addressed classes are

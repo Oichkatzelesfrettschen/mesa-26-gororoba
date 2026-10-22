@@ -219,4 +219,13 @@ extern bool r300_nir_lower_vs_system_values_to_inputs(nir_shader *s,
  * instancing; the synthetic-input path remains the base-inclusive default. */
 extern bool r300_nir_lower_vs_system_values_to_intrinsics(nir_shader *s);
 
+/* Jointly rewrites multi-output shared Boolean factoring:
+ *   y0 = (a & b) | (a & c)
+ *   y1 = (a & b) | (a & d)
+ * to:
+ *   y0 = a & (b | c)
+ *   y1 = a & (b | d)
+ * when p = a & b has no external fanout, reducing operations from 5 to 4. */
+extern bool r300_nir_opt_shared_bool(nir_shader *s);
+
 #endif /* R300_NIR_H */

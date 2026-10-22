@@ -2131,6 +2131,179 @@ test_pair_eval_presubtract_contract(void)
    rc_destroy_regalloc_state(&rs);
 }
 
+static void
+test_pair_eval_cmp_cnd_contract(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   /* Add constants: c.x = 1/8 (0.125f), c.y = 7/8 (0.875f) */
+   const unsigned c_idx = add_const(&fc, 0.125f, 0.875f, 0.0f, 0.0f);
+
+   /* 1. Direct hand-built paired instruction test with distinct values:
+    * Arg0 = 1/8, Arg1 = 7/8, Arg2 = cond.
+    * Paired instruction convention (r300_reg.h L1884-1885):
+    * CMP: if Arg2 < 0 return Arg1 (7/8), else return Arg0 (1/8).
+    * CND: if Arg2 > 0.5 return Arg0 (1/8), else return Arg1 (7/8).
+    */
+   struct rc_pair_instruction pair;
+   memset(&pair, 0, sizeof(pair));
+   pair.RGB.Opcode = RC_OPCODE_CMP;
+   pair.RGB.DestIndex = 0;
+   pair.RGB.WriteMask = RC_MASK_X;
+   pair.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_CONSTANT, .Index = c_idx};
+   pair.RGB.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   pair.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XXXX}; /* 1/8 */
+   pair.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_YYYY}; /* 7/8 */
+   pair.RGB.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_XXXX}; /* cond */
+
+   pair.Alpha.Opcode = RC_OPCODE_CND;
+   pair.Alpha.DestIndex = 0;
+   pair.Alpha.WriteMask = RC_MASK_W;
+   pair.Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_CONSTANT, .Index = c_idx};
+   pair.Alpha.Src[1] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 1};
+   pair.Alpha.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XXXX}; /* 1/8 (true if > 0.5) */
+   pair.Alpha.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_YYYY}; /* 7/8 (false if <= 0.5) */
+   pair.Alpha.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 1, .Swizzle = RC_SWIZZLE_WWWW}; /* cond */
+
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &pair);
+
+   const struct r300_pair_eval_profile identity = r300_pair_eval_profile_identity();
+
+   /* Case 1: cond_cmp = -0.25 (< 0 -> 7/8); cond_cnd = 0.25 (<= 0.5 -> 7/8) */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc.Base.Program.Constants;
+      e.inputs[0][0] = -0.25f;
+      e.inputs[1][3] = 0.25f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc.Base), "cmp/cnd evaluates case 1");
+      CHECK(nearly_equal(e.temps[0][0], 0.875f), "cmp (-0.25 < 0) produces Arg1 (7/8)");
+      CHECK(nearly_equal(e.temps[0][3], 0.875f), "cnd (0.25 <= 0.5) produces Arg1 (7/8)");
+   }
+
+   /* Case 2: cond_cmp = 0.25 (>= 0 -> 1/8); cond_cnd = 0.75 (> 0.5 -> 1/8) */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc.Base.Program.Constants;
+      e.inputs[0][0] = 0.25f;
+      e.inputs[1][3] = 0.75f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc.Base), "cmp/cnd evaluates case 2");
+      CHECK(nearly_equal(e.temps[0][0], 0.125f), "cmp (0.25 >= 0) produces Arg0 (1/8)");
+      CHECK(nearly_equal(e.temps[0][3], 0.125f), "cnd (0.75 > 0.5) produces Arg0 (1/8)");
+   }
+
+   /* Case 3: Boundary values: cond_cmp = 0.0 (>= 0 -> 1/8); cond_cnd = 0.5 (<= 0.5 -> 7/8) */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc.Base.Program.Constants;
+      e.inputs[0][0] = 0.0f;
+      e.inputs[1][3] = 0.5f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc.Base), "cmp/cnd evaluates boundaries");
+      CHECK(nearly_equal(e.temps[0][0], 0.125f), "cmp (0.0 >= 0) produces Arg0 (1/8)");
+      CHECK(nearly_equal(e.temps[0][3], 0.875f), "cnd (0.5 <= 0.5) produces Arg1 (7/8)");
+   }
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+
+   /* 2. End-to-end test: RC normal instructions -> rc_pair_translate -> r300_pair_eval_program.
+    * Proves compiler final_rewrite swap of CMP Arg0/Arg2 matches our pair evaluator convention.
+    */
+   struct r300_fragment_program_compiler fc2;
+   struct rc_regalloc_state rs2;
+   fs_compiler_init(&fc2, &rs2);
+   const unsigned c_idx2 = add_const(&fc2, 0.125f, 0.875f, 0.0f, 0.0f);
+
+   /* In normal RC IR:
+    * CMP: dst = src0 < 0.0 ? src1 : src2
+    * So src0 = cond, src1 = 7/8 (c.y), src2 = 1/8 (c.x).
+    */
+   struct rc_instruction *inst_cmp =
+      rc_insert_new_instruction(&fc2.Base, &fc2.Base.Program.Instructions);
+   inst_cmp->U.I.Opcode = RC_OPCODE_CMP;
+   inst_cmp->U.I.DstReg.File = RC_FILE_TEMPORARY;
+   inst_cmp->U.I.DstReg.Index = 0;
+   inst_cmp->U.I.DstReg.WriteMask = RC_MASK_XYZ;
+   inst_cmp->U.I.SrcReg[0].File = RC_FILE_INPUT;
+   inst_cmp->U.I.SrcReg[0].Index = 0;
+   inst_cmp->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XXXX;
+   inst_cmp->U.I.SrcReg[1].File = RC_FILE_CONSTANT;
+   inst_cmp->U.I.SrcReg[1].Index = c_idx2;
+   inst_cmp->U.I.SrcReg[1].Swizzle = RC_SWIZZLE_YYYY; /* 7/8 */
+   inst_cmp->U.I.SrcReg[2].File = RC_FILE_CONSTANT;
+   inst_cmp->U.I.SrcReg[2].Index = c_idx2;
+   inst_cmp->U.I.SrcReg[2].Swizzle = RC_SWIZZLE_XXXX; /* 1/8 */
+
+   /* CND: dst = src2 > 0.5 ? src0 : src1
+    * So src2 = cond, src0 = 1/8 (c.x), src1 = 7/8 (c.y).
+    */
+   struct rc_instruction *inst_cnd =
+      rc_insert_new_instruction(&fc2.Base, inst_cmp);
+   inst_cnd->U.I.Opcode = RC_OPCODE_CND;
+   inst_cnd->U.I.DstReg.File = RC_FILE_TEMPORARY;
+   inst_cnd->U.I.DstReg.Index = 0;
+   inst_cnd->U.I.DstReg.WriteMask = RC_MASK_W;
+   inst_cnd->U.I.SrcReg[0].File = RC_FILE_CONSTANT;
+   inst_cnd->U.I.SrcReg[0].Index = c_idx2;
+   inst_cnd->U.I.SrcReg[0].Swizzle = RC_SWIZZLE_XXXX; /* 1/8 */
+   inst_cnd->U.I.SrcReg[1].File = RC_FILE_CONSTANT;
+   inst_cnd->U.I.SrcReg[1].Index = c_idx2;
+   inst_cnd->U.I.SrcReg[1].Swizzle = RC_SWIZZLE_YYYY; /* 7/8 */
+   inst_cnd->U.I.SrcReg[2].File = RC_FILE_INPUT;
+   inst_cnd->U.I.SrcReg[2].Index = 1;
+   inst_cnd->U.I.SrcReg[2].Swizzle = RC_SWIZZLE_WWWW; /* cond */
+
+   int opt2 = 0;
+   rc_pair_translate(&fc2.Base, &opt2);
+   CHECK(!fc2.Base.Error, "e2e: rc_pair_translate succeeds for normal CMP and CND");
+
+   /* Evaluate case 1 on the translated pair program: */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc2.Base.Program.Constants;
+      e.inputs[0][0] = -0.25f;
+      e.inputs[1][3] = 0.25f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc2.Base), "e2e: pair eval on translated program case 1");
+      CHECK(nearly_equal(e.temps[0][0], 0.875f), "e2e: translated CMP (-0.25 < 0) produces 7/8");
+      CHECK(nearly_equal(e.temps[0][3], 0.875f), "e2e: translated CND (0.25 <= 0.5) produces 7/8");
+   }
+
+   /* Evaluate case 2 on the translated pair program: */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc2.Base.Program.Constants;
+      e.inputs[0][0] = 0.25f;
+      e.inputs[1][3] = 0.75f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc2.Base), "e2e: pair eval on translated program case 2");
+      CHECK(nearly_equal(e.temps[0][0], 0.125f), "e2e: translated CMP (0.25 >= 0) produces 1/8");
+      CHECK(nearly_equal(e.temps[0][3], 0.125f), "e2e: translated CND (0.75 > 0.5) produces 1/8");
+   }
+
+   rc_destroy(&fc2.Base);
+   rc_destroy_regalloc_state(&rs2);
+}
+
 int
 main(void)
 {
@@ -2157,6 +2330,7 @@ main(void)
    test_pair_eval_resolved_source_bank_contract();
    test_pair_eval_presub_source_bank_contract();
    test_pair_eval_presubtract_contract();
+   test_pair_eval_cmp_cnd_contract();
 
    glsl_type_singleton_decref();
    if (failures) {
