@@ -793,6 +793,127 @@ case_distributive_and_absorption(void)
    teardown_fs(&c, &rs);
 }
 
+struct nir_eval_val {
+   float f[4];
+   uint32_t u[4];
+   bool b[4];
+};
+
+static bool
+eval_nir_fs_simple(nir_shader *s, const float in_v[4], float out_rgba[4])
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(s);
+   nir_index_ssa_defs(impl);
+   unsigned num_defs = impl->ssa_alloc;
+   struct nir_eval_val *vals = rzalloc_array(NULL, struct nir_eval_val, num_defs);
+   if (!vals)
+      return false;
+
+   memset(out_rgba, 0, 4 * sizeof(float));
+
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type == nir_instr_type_load_const) {
+            nir_load_const_instr *lc = nir_instr_as_load_const(instr);
+            unsigned idx = lc->def.index;
+            for (unsigned c = 0; c < lc->def.num_components; c++) {
+               vals[idx].u[c] = lc->value[c].u32;
+               vals[idx].f[c] = lc->value[c].f32;
+               vals[idx].b[c] = (lc->value[c].u32 != 0);
+            }
+         } else if (instr->type == nir_instr_type_intrinsic) {
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_load_deref) {
+               nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+               if (deref && deref->var && deref->var->data.mode == nir_var_shader_in) {
+                  unsigned idx = intr->def.index;
+                  for (unsigned c = 0; c < 4; c++) {
+                     vals[idx].f[c] = in_v[c];
+                     vals[idx].u[c] = (uint32_t)in_v[c];
+                     vals[idx].b[c] = (in_v[c] != 0.0f);
+                  }
+               }
+            } else if (intr->intrinsic == nir_intrinsic_store_deref) {
+               nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+               if (deref && deref->var && deref->var->data.mode == nir_var_shader_out) {
+                  nir_def *src_def = intr->src[1].ssa;
+                  unsigned idx = src_def->index;
+                  for (unsigned c = 0; c < 4; c++) {
+                     out_rgba[c] = vals[idx].f[c];
+                  }
+               }
+            }
+         } else if (instr->type == nir_instr_type_alu) {
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            unsigned idx = alu->def.index;
+            unsigned ncomp = alu->def.num_components;
+
+            struct nir_eval_val s_src[4];
+            for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+               unsigned s_idx = alu->src[i].src.ssa->index;
+               for (unsigned c = 0; c < ncomp; c++) {
+                  uint8_t swiz = alu->src[i].swizzle[c];
+                  s_src[i].f[c] = vals[s_idx].f[swiz];
+                  s_src[i].u[c] = vals[s_idx].u[swiz];
+                  s_src[i].b[c] = vals[s_idx].b[swiz];
+               }
+            }
+
+            for (unsigned c = 0; c < ncomp; c++) {
+               switch (alu->op) {
+               case nir_op_mov:
+                  vals[idx].f[c] = s_src[0].f[c];
+                  vals[idx].u[c] = s_src[0].u[c];
+                  vals[idx].b[c] = s_src[0].b[c];
+                  break;
+               case nir_op_vec2:
+               case nir_op_vec4:
+                  vals[idx].f[c] = s_src[c].f[0];
+                  vals[idx].u[c] = s_src[c].u[0];
+                  vals[idx].b[c] = s_src[c].b[0];
+                  break;
+               case nir_op_flt:
+                  vals[idx].b[c] = (s_src[0].f[c] < s_src[1].f[c]);
+                  vals[idx].u[c] = vals[idx].b[c] ? 0xffffffff : 0;
+                  vals[idx].f[c] = vals[idx].b[c] ? 1.0f : 0.0f;
+                  break;
+               case nir_op_iand:
+                  vals[idx].b[c] = s_src[0].b[c] && s_src[1].b[c];
+                  vals[idx].u[c] = s_src[0].u[c] & s_src[1].u[c];
+                  vals[idx].f[c] = vals[idx].b[c] ? 1.0f : 0.0f;
+                  break;
+               case nir_op_ior:
+                  vals[idx].b[c] = s_src[0].b[c] || s_src[1].b[c];
+                  vals[idx].u[c] = s_src[0].u[c] | s_src[1].u[c];
+                  vals[idx].f[c] = vals[idx].b[c] ? 1.0f : 0.0f;
+                  break;
+               case nir_op_fmin:
+                  vals[idx].f[c] = (s_src[0].f[c] < s_src[1].f[c]) ? s_src[0].f[c] : s_src[1].f[c];
+                  vals[idx].u[c] = (uint32_t)vals[idx].f[c];
+                  vals[idx].b[c] = (vals[idx].f[c] > 0.0f);
+                  break;
+               case nir_op_fmax:
+                  vals[idx].f[c] = (s_src[0].f[c] > s_src[1].f[c]) ? s_src[0].f[c] : s_src[1].f[c];
+                  vals[idx].u[c] = (uint32_t)vals[idx].f[c];
+                  vals[idx].b[c] = (vals[idx].f[c] > 0.0f);
+                  break;
+               case nir_op_b2f32:
+                  vals[idx].f[c] = s_src[0].b[c] ? 1.0f : 0.0f;
+                  vals[idx].u[c] = s_src[0].b[c] ? 0x3f800000 : 0;
+                  vals[idx].b[c] = s_src[0].b[c];
+                  break;
+               default:
+                  break;
+               }
+            }
+         }
+      }
+   }
+
+   ralloc_free(vals);
+   return true;
+}
+
 static unsigned
 count_nir_boolean_ops(nir_shader *s, unsigned *out_and, unsigned *out_or)
 {
@@ -802,9 +923,9 @@ count_nir_boolean_ops(nir_shader *s, unsigned *out_and, unsigned *out_or)
          nir_foreach_instr(instr, block) {
             if (instr->type == nir_instr_type_alu) {
                nir_alu_instr *alu = nir_instr_as_alu(instr);
-               if (alu->op == nir_op_iand)
+               if (alu->op == nir_op_iand || alu->op == nir_op_fmin)
                   num_and++;
-               else if (alu->op == nir_op_ior)
+               else if (alu->op == nir_op_ior || alu->op == nir_op_fmax)
                   num_or++;
             }
          }
@@ -831,13 +952,16 @@ build_fs_vector_swizzle_counterexample(void)
    out->data.driver_location = 0;
 
    nir_def *v = nir_load_var(&b, in0);
-   /* A is a vec2 (num_components == 2) */
-   nir_def *a_vec = nir_trim_vector(&b, v, 2);
+   /* Construct 1-bit boolean predicates with different thresholds */
+   nir_def *ax = nir_flt(&b, nir_channel(&b, v, 0), nir_imm_float(&b, 1.0f));
+   nir_def *ay = nir_flt(&b, nir_channel(&b, v, 1), nir_imm_float(&b, 2.0f));
+   nir_def *a_vec = nir_vec2(&b, ax, ay); /* 1-bit vec2 */
+
    nir_def *b_val = nir_flt(&b, nir_channel(&b, v, 2), nir_imm_float(&b, 1.0f));
    nir_def *c_val = nir_flt(&b, nir_channel(&b, v, 3), nir_imm_float(&b, 2.0f));
    nir_def *d_val = nir_flt(&b, nir_channel(&b, v, 3), nir_imm_float(&b, 3.0f));
 
-   /* Build p: iand with src[0] = a_vec (swizzle 0 = .x) and src[1] = b_val */
+   /* Build p: iand with src[0] = a_vec.x (swizzle 0) and src[1] = b_val (1-bit) */
    nir_alu_instr *p_alu = nir_alu_instr_create(b.shader, nir_op_iand);
    nir_def_init(&p_alu->instr, &p_alu->def, 1, 1);
    p_alu->src[0].src = nir_src_for_ssa(a_vec);
@@ -846,7 +970,7 @@ build_fs_vector_swizzle_counterexample(void)
    p_alu->src[1].swizzle[0] = 0;
    nir_builder_instr_insert(&b, &p_alu->instr);
 
-   /* Build ac: iand with src[0] = a_vec (swizzle 1 = .y) and src[1] = c_val */
+   /* Build ac: iand with src[0] = a_vec.y (swizzle 1) and src[1] = c_val (1-bit) */
    nir_alu_instr *ac_alu = nir_alu_instr_create(b.shader, nir_op_iand);
    nir_def_init(&ac_alu->instr, &ac_alu->def, 1, 1);
    ac_alu->src[0].src = nir_src_for_ssa(a_vec);
@@ -855,7 +979,7 @@ build_fs_vector_swizzle_counterexample(void)
    ac_alu->src[1].swizzle[0] = 0;
    nir_builder_instr_insert(&b, &ac_alu->instr);
 
-   /* Build ad: iand with src[0] = a_vec (swizzle 1 = .y) and src[1] = d_val */
+   /* Build ad: iand with src[0] = a_vec.y (swizzle 1) and src[1] = d_val (1-bit) */
    nir_alu_instr *ad_alu = nir_alu_instr_create(b.shader, nir_op_iand);
    nir_def_init(&ad_alu->instr, &ad_alu->def, 1, 1);
    ad_alu->src[0].src = nir_src_for_ssa(a_vec);
@@ -877,13 +1001,16 @@ static void
 case_nir_shared_bool_pass_direct(void)
 {
    /* Test 1: Standard 5-op shared Boolean pattern (Specimen 4) */
-   nir_shader *s = build_fs_shared_boolean_factoring(false);
+   nir_shader *s_orig = build_fs_shared_boolean_factoring(false);
+   nir_validate_shader(s_orig, "shared bool initial fixture");
+
    unsigned and_pre = 0, or_pre = 0;
-   unsigned total_pre = count_nir_boolean_ops(s, &and_pre, &or_pre);
+   unsigned total_pre = count_nir_boolean_ops(s_orig, &and_pre, &or_pre);
    CHECK(total_pre == 5 && and_pre == 3 && or_pre == 2,
          "pre-optimization NIR graph has exactly 5 Boolean ALU ops (3 iand, 2 ior)");
 
    /* Calibration check: DCE alone without shared factoring preserves all 5 operations */
+   nir_shader *s = nir_shader_clone(NULL, s_orig);
    nir_opt_dce(s);
    unsigned total_dce_only = count_nir_boolean_ops(s, NULL, NULL);
    CHECK(total_dce_only == 5,
@@ -892,6 +1019,7 @@ case_nir_shared_bool_pass_direct(void)
    /* Run r300_nir_opt_shared_bool: must report progress */
    bool progress = r300_nir_opt_shared_bool(s);
    CHECK(progress, "r300_nir_opt_shared_bool reports progress on 5-op shared Boolean pattern");
+   nir_validate_shader(s, "after r300_nir_opt_shared_bool");
 
    /* After DCE of dead p, ac, ad */
    nir_opt_dce(s);
@@ -904,39 +1032,118 @@ case_nir_shared_bool_pass_direct(void)
    bool progress2 = r300_nir_opt_shared_bool(s);
    CHECK(!progress2, "second pass of r300_nir_opt_shared_bool reports no progress (idempotent)");
 
-   /* Truth-table equivalence on all 16 inputs {0,1}^4 */
-   unsigned tt_matches = 0;
+   /* Semantic evaluation of actual NIR shader graphs across all 16 inputs {0,1}^4 */
+   unsigned tt_matches_orig = 0;
+   unsigned tt_matches_fact = 0;
    for (unsigned i = 0; i < 16; i++) {
       bool a = (i >> 0) & 1;
-      bool b = (i >> 1) & 1;
+      bool b_val = (i >> 1) & 1;
       bool c = (i >> 2) & 1;
       bool d = (i >> 3) & 1;
 
-      bool orig_p = a && b;
-      bool orig_y0 = orig_p || (a && c);
-      bool orig_y1 = orig_p || (a && d);
+      float exp_y0 = (a && (b_val || c)) ? 1.0f : 0.0f;
+      float exp_y1 = (a && (b_val || d)) ? 1.0f : 0.0f;
 
-      bool fact_y0 = a && (b || c);
-      bool fact_y1 = a && (b || d);
+      float v[4] = {
+         a ? 0.5f : 1.5f,
+         b_val ? 1.5f : 2.5f,
+         c ? 2.5f : 3.5f,
+         d ? 3.5f : 4.5f,
+      };
 
-      if (orig_y0 == fact_y0 && orig_y1 == fact_y1)
-         tt_matches++;
+      float out_orig[4] = {0};
+      float out_fact[4] = {0};
+
+      eval_nir_fs_simple(s_orig, v, out_orig);
+      eval_nir_fs_simple(s, v, out_fact);
+
+      if (out_orig[0] == exp_y0 && out_orig[1] == exp_y1)
+         tt_matches_orig++;
+      if (out_fact[0] == exp_y0 && out_fact[1] == exp_y1 &&
+          out_fact[0] == out_orig[0] && out_fact[1] == out_orig[1])
+         tt_matches_fact++;
    }
-   CHECK(tt_matches == 16,
-         "16/16 truth-table assignments match between original 5-op and factored 4-op graphs");
+   CHECK(tt_matches_orig == 16,
+         "16/16 actual original NIR graph outputs match independent formula");
+   CHECK(tt_matches_fact == 16,
+         "16/16 actual factored NIR graph outputs match original graph and formula");
 
+   /* Evaluator Calibration: deliberately mutate shader by swapping output channels y0 and y1.
+    * The semantic assertion must detect the swap and fail the 16/16 check. */
+   nir_shader *s_mut = nir_shader_clone(NULL, s);
+   nir_foreach_function_impl(m_impl, s_mut) {
+      nir_foreach_block(m_blk, m_impl) {
+         nir_foreach_instr(m_ins, m_blk) {
+            if (m_ins->type == nir_instr_type_intrinsic) {
+               nir_intrinsic_instr *store = nir_instr_as_intrinsic(m_ins);
+               if (store->intrinsic == nir_intrinsic_store_deref) {
+                  nir_alu_instr *vec = nir_def_as_alu_or_null(store->src[1].ssa);
+                  if (vec && (vec->op == nir_op_vec4 || vec->op == nir_op_vec2)) {
+                     nir_alu_src tmp = vec->src[0];
+                     vec->src[0] = vec->src[1];
+                     vec->src[1] = tmp;
+                  }
+               }
+            }
+         }
+      }
+   }
+   unsigned mut_matches = 0;
+   for (unsigned i = 0; i < 16; i++) {
+      float v[4] = {
+         ((i >> 0) & 1) ? 0.5f : 1.5f,
+         ((i >> 1) & 1) ? 1.5f : 2.5f,
+         ((i >> 2) & 1) ? 2.5f : 3.5f,
+         ((i >> 3) & 1) ? 3.5f : 4.5f,
+      };
+      float out_mut[4] = {0};
+      eval_nir_fs_simple(s_mut, v, out_mut);
+      bool a = (i >> 0) & 1;
+      bool b_val = (i >> 1) & 1;
+      bool c = (i >> 2) & 1;
+      bool d = (i >> 3) & 1;
+      float exp_y0 = (a && (b_val || c)) ? 1.0f : 0.0f;
+      float exp_y1 = (a && (b_val || d)) ? 1.0f : 0.0f;
+      if (out_mut[0] == exp_y0 && out_mut[1] == exp_y1)
+         mut_matches++;
+   }
+   CHECK(mut_matches < 16,
+         "calibration: evaluator detects mutated shader output swap (less than 16/16 matches)");
+
+   ralloc_free(s_mut);
+   ralloc_free(s_orig);
    ralloc_free(s);
 
    /* Test 2: Observable p (Specimen 5) - must refuse to rewrite */
    nir_shader *s_obs = build_fs_shared_boolean_factoring(true);
+   nir_validate_shader(s_obs, "shared bool observable fixture");
    bool progress_obs = r300_nir_opt_shared_bool(s_obs);
    CHECK(!progress_obs, "r300_nir_opt_shared_bool refuses when p has external fanout");
    ralloc_free(s_obs);
 
    /* Test 3: Vector swizzle counterexample (Specimen 8) - must refuse to rewrite */
    nir_shader *s_vec = build_fs_vector_swizzle_counterexample();
+   nir_validate_shader(s_vec, "vector swizzle counterexample before pass");
    bool progress_vec = r300_nir_opt_shared_bool(s_vec);
    CHECK(!progress_vec, "r300_nir_opt_shared_bool refuses vector/swizzled inputs (fail-closed)");
+   nir_validate_shader(s_vec, "vector swizzle counterexample after pass");
+
+   /* Concrete counterexample semantic test:
+    * For v = (2.0f, 0.0f, 2.0f, 0.0f):
+    * ax = (2.0 < 1.0) = 0
+    * ay = (0.0 < 2.0) = 1
+    * b  = (2.0 < 1.0) = 0
+    * c  = (0.0 < 2.0) = 1
+    * d  = (0.0 < 3.0) = 1
+    * Correct output: p = 0 & 0 = 0, y0 = 0 | (1 & 1) = 1, y1 = 0 | (1 & 1) = 1 -> (1.0, 1.0)
+    * Buggy rewrite conflating ax and ay would yield: y0 = 0 & (0 | 1) = 0, y1 = 0 -> (0.0, 0.0)
+    */
+   float v_counter[4] = { 2.0f, 0.0f, 2.0f, 0.0f };
+   float out_vec[4] = {0};
+   eval_nir_fs_simple(s_vec, v_counter, out_vec);
+   CHECK(out_vec[0] == 1.0f && out_vec[1] == 1.0f,
+         "counterexample preserves correct output (1,1) under fail-closed refusal");
+
    ralloc_free(s_vec);
 }
 
