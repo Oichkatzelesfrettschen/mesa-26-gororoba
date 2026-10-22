@@ -1259,23 +1259,70 @@ case_nir_shared_bool_pass_direct(void)
          "r300_nir_opt_shared_bool rewrites float shared factoring when preserve_nan is absent");
    nir_validate_shader(s_fp_unflagged, "float shared bool unflagged after pass");
 
-   /* Verify that replacement ALU instructions retain nir_fp_preserve_inf */
-   bool fp_ctrl_retained = false;
+   /* Clean dead original instructions (p, ac, ad) */
+   nir_opt_dce(s_fp_unflagged);
+   nir_validate_shader(s_fp_unflagged, "after clean float unflagged shared bool");
+
+   /* Require exactly 4 remaining min/max instructions: 2 minima and 2 maxima */
+   unsigned fp_min_count = 0, fp_max_count = 0;
+   unsigned fp_total = count_nir_boolean_ops(s_fp_unflagged, &fp_min_count, &fp_max_count);
+   CHECK(fp_total == 4 && fp_min_count == 2 && fp_max_count == 2,
+         "clean post-optimization float NIR graph has exactly 4 min/max ALU ops (2 fmin, 2 fmax)");
+
+   /* Require EVERY one of those 4 live replacement instructions to retain the expected controls */
+   unsigned flagged_min_max_count = 0;
+   bool all_replacements_retain_ctrl = true;
    nir_foreach_function_impl(f_impl, s_fp_unflagged) {
       nir_foreach_block(f_blk, f_impl) {
          nir_foreach_instr(f_ins, f_blk) {
             if (f_ins->type == nir_instr_type_alu) {
                nir_alu_instr *alu = nir_instr_as_alu(f_ins);
                if (alu->op == nir_op_fmin || alu->op == nir_op_fmax) {
-                  if (alu->fp_math_ctrl & nir_fp_preserve_inf)
-                     fp_ctrl_retained = true;
+                  flagged_min_max_count++;
+                  if ((alu->fp_math_ctrl & nir_fp_preserve_inf) != nir_fp_preserve_inf)
+                     all_replacements_retain_ctrl = false;
                }
             }
          }
       }
    }
-   CHECK(fp_ctrl_retained,
-         "replacement float ALU instructions preserve inherited fp_math_ctrl (nir_fp_preserve_inf)");
+   CHECK(flagged_min_max_count == 4 && all_replacements_retain_ctrl,
+         "all 4/4 live replacement float ALU instructions retain inherited fp_math_ctrl (nir_fp_preserve_inf)");
+
+   /* Negative calibration: verify that if a replacement instruction loses its controls,
+    * the universal retention check detects it. */
+   nir_shader *s_fp_calib = nir_shader_clone(NULL, s_fp_unflagged);
+   bool stripped_one = false;
+   nir_foreach_function_impl(c_impl, s_fp_calib) {
+      nir_foreach_block(c_blk, c_impl) {
+         nir_foreach_instr(c_ins, c_blk) {
+            if (c_ins->type == nir_instr_type_alu) {
+               nir_alu_instr *alu = nir_instr_as_alu(c_ins);
+               if ((alu->op == nir_op_fmin || alu->op == nir_op_fmax) && !stripped_one) {
+                  alu->fp_math_ctrl = 0;
+                  stripped_one = true;
+               }
+            }
+         }
+      }
+   }
+   bool calib_all_retain = true;
+   nir_foreach_function_impl(c_impl, s_fp_calib) {
+      nir_foreach_block(c_blk, c_impl) {
+         nir_foreach_instr(c_ins, c_blk) {
+            if (c_ins->type == nir_instr_type_alu) {
+               nir_alu_instr *alu = nir_instr_as_alu(c_ins);
+               if (alu->op == nir_op_fmin || alu->op == nir_op_fmax) {
+                  if ((alu->fp_math_ctrl & nir_fp_preserve_inf) != nir_fp_preserve_inf)
+                     calib_all_retain = false;
+               }
+            }
+         }
+      }
+   }
+   CHECK(stripped_one && !calib_all_retain,
+         "calibration: universal control check detects instruction with stripped fp_math_ctrl");
+   ralloc_free(s_fp_calib);
    ralloc_free(s_fp_unflagged);
 }
 
