@@ -30,6 +30,9 @@
  * (fail-closed cost and identity gate).
  */
 
+#include <stdlib.h>
+#include <string.h>
+
 #include "r300_nir.h"
 #include "compiler/nir/nir_builder.h"
 
@@ -127,6 +130,10 @@ build_scalar_binary(nir_builder *b, nir_op op, unsigned bit_size,
 bool
 r300_nir_opt_shared_bool(nir_shader *s)
 {
+   const char *disable = getenv("R300_DISABLE_SHARED_BOOL");
+   if (disable && strcmp(disable, "1") == 0)
+      return false;
+
    bool progress = false;
 
    nir_foreach_function_impl(impl, s) {
