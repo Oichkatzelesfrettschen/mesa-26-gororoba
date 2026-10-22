@@ -346,6 +346,22 @@ eval_rgb_op(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
       for (unsigned ch = 0; ch < 3; ch++)
          result[ch] = s0[ch] - floorf(s0[ch]);
       return true;
+   case RC_OPCODE_CMP:
+      if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
+          !eval_rgb_arg(e, pair, sub, 1, false, s1) ||
+          !eval_rgb_arg(e, pair, sub, 2, false, s2))
+         return false;
+      for (unsigned ch = 0; ch < 3; ch++)
+         result[ch] = (s0[ch] < 0.0f) ? s1[ch] : s2[ch];
+      return true;
+   case RC_OPCODE_CND:
+      if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
+          !eval_rgb_arg(e, pair, sub, 1, false, s1) ||
+          !eval_rgb_arg(e, pair, sub, 2, false, s2))
+         return false;
+      for (unsigned ch = 0; ch < 3; ch++)
+         result[ch] = (s0[ch] > 0.5f) ? s1[ch] : s2[ch];
+      return true;
    default:
       e->error = "unhandled RGB pair opcode";
       return false;
@@ -381,6 +397,20 @@ eval_alpha_op(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
       if (!eval_alpha_arg(e, pair, sub, 0, &s0))
          return false;
       *result = s0 - floorf(s0);
+      return true;
+   case RC_OPCODE_CMP:
+      if (!eval_alpha_arg(e, pair, sub, 0, &s0) ||
+          !eval_alpha_arg(e, pair, sub, 1, &s1) ||
+          !eval_alpha_arg(e, pair, sub, 2, &s2))
+         return false;
+      *result = (s0 < 0.0f) ? s1 : s2;
+      return true;
+   case RC_OPCODE_CND:
+      if (!eval_alpha_arg(e, pair, sub, 0, &s0) ||
+          !eval_alpha_arg(e, pair, sub, 1, &s1) ||
+          !eval_alpha_arg(e, pair, sub, 2, &s2))
+         return false;
+      *result = (s0 > 0.5f) ? s1 : s2;
       return true;
    default:
       e->error = "unhandled Alpha pair opcode";

@@ -2131,6 +2131,86 @@ test_pair_eval_presubtract_contract(void)
    rc_destroy_regalloc_state(&rs);
 }
 
+static void
+test_pair_eval_cmp_cnd_contract(void)
+{
+   struct r300_fragment_program_compiler fc;
+   struct rc_regalloc_state rs;
+   fs_compiler_init(&fc, &rs);
+
+   struct rc_pair_instruction pair;
+   memset(&pair, 0, sizeof(pair));
+   pair.RGB.Opcode = RC_OPCODE_CMP;
+   pair.RGB.DestIndex = 0;
+   pair.RGB.WriteMask = RC_MASK_X;
+   pair.RGB.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 0};
+   pair.RGB.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_XXXX};
+   pair.RGB.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_1111};
+   pair.RGB.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_0000};
+
+   pair.Alpha.Opcode = RC_OPCODE_CND;
+   pair.Alpha.DestIndex = 0;
+   pair.Alpha.WriteMask = RC_MASK_W;
+   pair.Alpha.Src[0] = (struct rc_pair_instruction_source){
+      .Used = 1, .File = RC_FILE_INPUT, .Index = 1};
+   pair.Alpha.Arg[0] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_WWWW};
+   pair.Alpha.Arg[1] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_1111};
+   pair.Alpha.Arg[2] = (struct rc_pair_instruction_arg){
+      .Source = 0, .Swizzle = RC_SWIZZLE_0000};
+
+   append_pair(&fc.Base, &fc.Base.Program.Instructions, &pair);
+
+   const struct r300_pair_eval_profile identity = r300_pair_eval_profile_identity();
+
+   /* Case 1: cond < 0 -> returns 1.0; cnd <= 0.5 -> returns 0.0 */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc.Base.Program.Constants;
+      e.inputs[0][0] = -0.5f;
+      e.inputs[1][3] = 0.4f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc.Base), "cmp/cnd evaluates case 1");
+      CHECK(nearly_equal(e.temps[0][0], 1.0f), "cmp (-0.5 < 0) produces true (1.0)");
+      CHECK(nearly_equal(e.temps[0][3], 0.0f), "cnd (0.4 <= 0.5) produces false (0.0)");
+   }
+
+   /* Case 2: cond >= 0 -> returns 0.0; cnd > 0.5 -> returns 1.0 */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc.Base.Program.Constants;
+      e.inputs[0][0] = 0.5f;
+      e.inputs[1][3] = 0.6f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc.Base), "cmp/cnd evaluates case 2");
+      CHECK(nearly_equal(e.temps[0][0], 0.0f), "cmp (0.5 >= 0) produces false (0.0)");
+      CHECK(nearly_equal(e.temps[0][3], 1.0f), "cnd (0.6 > 0.5) produces true (1.0)");
+   }
+
+   /* Case 3: Boundary values: cond = 0.0 -> returns 0.0; cnd = 0.5 -> returns 0.0 */
+   {
+      struct r300_pair_eval e;
+      memset(&e, 0, sizeof(e));
+      e.consts = &fc.Base.Program.Constants;
+      e.inputs[0][0] = 0.0f;
+      e.inputs[1][3] = 0.5f;
+      e.profile = identity;
+      CHECK(r300_pair_eval_program(&e, &fc.Base), "cmp/cnd evaluates boundaries");
+      CHECK(nearly_equal(e.temps[0][0], 0.0f), "cmp (0.0 >= 0) produces false (0.0)");
+      CHECK(nearly_equal(e.temps[0][3], 0.0f), "cnd (0.5 <= 0.5) produces false (0.0)");
+   }
+
+   rc_destroy(&fc.Base);
+   rc_destroy_regalloc_state(&rs);
+}
+
 int
 main(void)
 {
@@ -2157,6 +2237,7 @@ main(void)
    test_pair_eval_resolved_source_bank_contract();
    test_pair_eval_presub_source_bank_contract();
    test_pair_eval_presubtract_contract();
+   test_pair_eval_cmp_cnd_contract();
 
    glsl_type_singleton_decref();
    if (failures) {
