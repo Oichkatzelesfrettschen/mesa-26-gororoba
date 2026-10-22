@@ -24,21 +24,31 @@
 static nir_def *
 get_other_and_src(nir_alu_instr *and_alu, nir_def *match_src)
 {
-   if (and_alu->src[0].src.ssa == match_src)
-      return and_alu->src[1].src.ssa;
-   if (and_alu->src[1].src.ssa == match_src)
-      return and_alu->src[0].src.ssa;
+   if (and_alu->src[0].src.ssa == match_src && and_alu->src[0].swizzle[0] == 0) {
+      if (and_alu->src[1].src.ssa->num_components == 1 && and_alu->src[1].swizzle[0] == 0)
+         return and_alu->src[1].src.ssa;
+   }
+   if (and_alu->src[1].src.ssa == match_src && and_alu->src[1].swizzle[0] == 0) {
+      if (and_alu->src[0].src.ssa->num_components == 1 && and_alu->src[0].swizzle[0] == 0)
+         return and_alu->src[0].src.ssa;
+   }
    return NULL;
 }
 
 static bool
 match_ior_arm(nir_alu_instr *ior_alu, nir_def *p_def, nir_def *a_def, nir_def **out_other)
 {
-   if (ior_alu->op != nir_op_ior)
+   if (ior_alu->op != nir_op_ior || ior_alu->def.num_components != 1)
+      return false;
+
+   if (ior_alu->src[0].swizzle[0] != 0 || ior_alu->src[1].swizzle[0] != 0)
       return false;
 
    nir_def *s0 = ior_alu->src[0].src.ssa;
    nir_def *s1 = ior_alu->src[1].src.ssa;
+
+   if (s0->num_components != 1 || s1->num_components != 1)
+      return false;
 
    nir_def *other_branch = NULL;
    if (s0 == p_def)
@@ -49,7 +59,14 @@ match_ior_arm(nir_alu_instr *ior_alu, nir_def *p_def, nir_def *a_def, nir_def **
       return false;
 
    nir_alu_instr *and_alu = nir_def_as_alu_or_null(other_branch);
-   if (!and_alu || and_alu->op != nir_op_iand)
+   if (!and_alu || and_alu->op != nir_op_iand || and_alu->def.num_components != 1)
+      return false;
+
+   if (and_alu->src[0].swizzle[0] != 0 || and_alu->src[1].swizzle[0] != 0)
+      return false;
+
+   if (and_alu->src[0].src.ssa->num_components != 1 ||
+       and_alu->src[1].src.ssa->num_components != 1)
       return false;
 
    /* Fail-closed: the paired AND branch must be single-use */
@@ -85,7 +102,17 @@ r300_nir_opt_shared_bool(nir_shader *s)
                if (p_alu->op != nir_op_iand)
                   continue;
 
+               /* Fail-closed: p must be strictly scalar Boolean or 32-bit integer */
+               if (p_alu->def.num_components != 1)
+                  continue;
                if (p_alu->def.bit_size != 1 && p_alu->def.bit_size != 32)
+                  continue;
+
+               /* Fail-closed: both sources of p must be strictly scalar with swizzle 0 */
+               if (p_alu->src[0].swizzle[0] != 0 || p_alu->src[1].swizzle[0] != 0)
+                  continue;
+               if (p_alu->src[0].src.ssa->num_components != 1 ||
+                   p_alu->src[1].src.ssa->num_components != 1)
                   continue;
 
                /* Fail-closed: p must have exactly 2 uses and no if-uses */
@@ -115,6 +142,8 @@ r300_nir_opt_shared_bool(nir_shader *s)
                nir_alu_instr *u1_alu = nir_instr_as_alu(u1_instr);
 
                if (u0_alu->op != nir_op_ior || u1_alu->op != nir_op_ior)
+                  continue;
+               if (u0_alu->def.num_components != 1 || u1_alu->def.num_components != 1)
                   continue;
 
                /* Try both operands of p as 'a':

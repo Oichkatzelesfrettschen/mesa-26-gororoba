@@ -793,6 +793,153 @@ case_distributive_and_absorption(void)
    teardown_fs(&c, &rs);
 }
 
+static unsigned
+count_nir_boolean_ops(nir_shader *s, unsigned *out_and, unsigned *out_or)
+{
+   unsigned num_and = 0, num_or = 0;
+   nir_foreach_function_impl(impl, s) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_alu) {
+               nir_alu_instr *alu = nir_instr_as_alu(instr);
+               if (alu->op == nir_op_iand)
+                  num_and++;
+               else if (alu->op == nir_op_ior)
+                  num_or++;
+            }
+         }
+      }
+   }
+   if (out_and) *out_and = num_and;
+   if (out_or) *out_or = num_or;
+   return num_and + num_or;
+}
+
+static nir_shader *
+build_fs_vector_swizzle_counterexample(void)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "r300_nir_fs_vec_swizzle_counterexample");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+   nir_variable *in0 = nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_v");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   /* A is a vec2 (num_components == 2) */
+   nir_def *a_vec = nir_trim_vector(&b, v, 2);
+   nir_def *b_val = nir_flt(&b, nir_channel(&b, v, 2), nir_imm_float(&b, 1.0f));
+   nir_def *c_val = nir_flt(&b, nir_channel(&b, v, 3), nir_imm_float(&b, 2.0f));
+   nir_def *d_val = nir_flt(&b, nir_channel(&b, v, 3), nir_imm_float(&b, 3.0f));
+
+   /* Build p: iand with src[0] = a_vec (swizzle 0 = .x) and src[1] = b_val */
+   nir_alu_instr *p_alu = nir_alu_instr_create(b.shader, nir_op_iand);
+   nir_def_init(&p_alu->instr, &p_alu->def, 1, 1);
+   p_alu->src[0].src = nir_src_for_ssa(a_vec);
+   p_alu->src[0].swizzle[0] = 0;
+   p_alu->src[1].src = nir_src_for_ssa(b_val);
+   p_alu->src[1].swizzle[0] = 0;
+   nir_builder_instr_insert(&b, &p_alu->instr);
+
+   /* Build ac: iand with src[0] = a_vec (swizzle 1 = .y) and src[1] = c_val */
+   nir_alu_instr *ac_alu = nir_alu_instr_create(b.shader, nir_op_iand);
+   nir_def_init(&ac_alu->instr, &ac_alu->def, 1, 1);
+   ac_alu->src[0].src = nir_src_for_ssa(a_vec);
+   ac_alu->src[0].swizzle[0] = 1;
+   ac_alu->src[1].src = nir_src_for_ssa(c_val);
+   ac_alu->src[1].swizzle[0] = 0;
+   nir_builder_instr_insert(&b, &ac_alu->instr);
+
+   /* Build ad: iand with src[0] = a_vec (swizzle 1 = .y) and src[1] = d_val */
+   nir_alu_instr *ad_alu = nir_alu_instr_create(b.shader, nir_op_iand);
+   nir_def_init(&ad_alu->instr, &ad_alu->def, 1, 1);
+   ad_alu->src[0].src = nir_src_for_ssa(a_vec);
+   ad_alu->src[0].swizzle[0] = 1;
+   ad_alu->src[1].src = nir_src_for_ssa(d_val);
+   ad_alu->src[1].swizzle[0] = 0;
+   nir_builder_instr_insert(&b, &ad_alu->instr);
+
+   nir_def *y0 = nir_ior(&b, &p_alu->def, &ac_alu->def);
+   nir_def *y1 = nir_ior(&b, &p_alu->def, &ad_alu->def);
+
+   nir_def *f0 = nir_b2f32(&b, y0);
+   nir_def *f1 = nir_b2f32(&b, y1);
+   nir_store_var(&b, out, nir_vec4(&b, f0, f1, nir_imm_float(&b, 0.0f), nir_imm_float(&b, 1.0f)), 0xf);
+   return b.shader;
+}
+
+static void
+case_nir_shared_bool_pass_direct(void)
+{
+   /* Test 1: Standard 5-op shared Boolean pattern (Specimen 4) */
+   nir_shader *s = build_fs_shared_boolean_factoring(false);
+   unsigned and_pre = 0, or_pre = 0;
+   unsigned total_pre = count_nir_boolean_ops(s, &and_pre, &or_pre);
+   CHECK(total_pre == 5 && and_pre == 3 && or_pre == 2,
+         "pre-optimization NIR graph has exactly 5 Boolean ALU ops (3 iand, 2 ior)");
+
+   /* Calibration check: DCE alone without shared factoring preserves all 5 operations */
+   nir_opt_dce(s);
+   unsigned total_dce_only = count_nir_boolean_ops(s, NULL, NULL);
+   CHECK(total_dce_only == 5,
+         "calibration: DCE alone without shared factoring leaves 5 Boolean ops intact");
+
+   /* Run r300_nir_opt_shared_bool: must report progress */
+   bool progress = r300_nir_opt_shared_bool(s);
+   CHECK(progress, "r300_nir_opt_shared_bool reports progress on 5-op shared Boolean pattern");
+
+   /* After DCE of dead p, ac, ad */
+   nir_opt_dce(s);
+   unsigned and_post = 0, or_post = 0;
+   unsigned total_post = count_nir_boolean_ops(s, &and_post, &or_post);
+   CHECK(total_post == 4 && and_post == 2 && or_post == 2,
+         "post-optimization NIR graph has exactly 4 Boolean ALU ops (2 iand, 2 ior: 5 -> 4)");
+
+   /* Idempotence: second pass makes no progress */
+   bool progress2 = r300_nir_opt_shared_bool(s);
+   CHECK(!progress2, "second pass of r300_nir_opt_shared_bool reports no progress (idempotent)");
+
+   /* Truth-table equivalence on all 16 inputs {0,1}^4 */
+   unsigned tt_matches = 0;
+   for (unsigned i = 0; i < 16; i++) {
+      bool a = (i >> 0) & 1;
+      bool b = (i >> 1) & 1;
+      bool c = (i >> 2) & 1;
+      bool d = (i >> 3) & 1;
+
+      bool orig_p = a && b;
+      bool orig_y0 = orig_p || (a && c);
+      bool orig_y1 = orig_p || (a && d);
+
+      bool fact_y0 = a && (b || c);
+      bool fact_y1 = a && (b || d);
+
+      if (orig_y0 == fact_y0 && orig_y1 == fact_y1)
+         tt_matches++;
+   }
+   CHECK(tt_matches == 16,
+         "16/16 truth-table assignments match between original 5-op and factored 4-op graphs");
+
+   ralloc_free(s);
+
+   /* Test 2: Observable p (Specimen 5) - must refuse to rewrite */
+   nir_shader *s_obs = build_fs_shared_boolean_factoring(true);
+   bool progress_obs = r300_nir_opt_shared_bool(s_obs);
+   CHECK(!progress_obs, "r300_nir_opt_shared_bool refuses when p has external fanout");
+   ralloc_free(s_obs);
+
+   /* Test 3: Vector swizzle counterexample (Specimen 8) - must refuse to rewrite */
+   nir_shader *s_vec = build_fs_vector_swizzle_counterexample();
+   bool progress_vec = r300_nir_opt_shared_bool(s_vec);
+   CHECK(!progress_vec, "r300_nir_opt_shared_bool refuses vector/swizzled inputs (fail-closed)");
+   ralloc_free(s_vec);
+}
+
 static void
 case_shared_boolean_factoring(void)
 {
@@ -849,6 +996,7 @@ main(void)
    case_textureproj_bias_lowers_to_fp24_rcp();
    case_boolean_logic_not_dummy_shaded();
    case_distributive_and_absorption();
+   case_nir_shared_bool_pass_direct();
    case_shared_boolean_factoring();
    case_xor_scheduling();
 

@@ -278,10 +278,10 @@ r300_optimize_nir(struct nir_shader *s,
          .expensive_alu_ok = true,
       };
       NIR_PASS(progress, s, nir_opt_peephole_select, &peephole_select_options);
+      NIR_PASS(progress, s, r300_nir_opt_shared_bool);
       if (s->info.stage == MESA_SHADER_FRAGMENT) {
          NIR_PASS(progress, s, r300_nir_lower_bool_to_float_fs);
       }
-      NIR_PASS(progress, s, r300_nir_opt_shared_bool);
       NIR_PASS(progress, s, nir_opt_algebraic);
       NIR_PASS(progress, s, nir_opt_constant_folding);
       NIR_PASS(progress, s, nir_opt_shrink_stores, true);

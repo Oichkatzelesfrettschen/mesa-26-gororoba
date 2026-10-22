@@ -347,20 +347,25 @@ eval_rgb_op(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
          result[ch] = s0[ch] - floorf(s0[ch]);
       return true;
    case RC_OPCODE_CMP:
+      /* Paired instruction convention (r300_reg.h L1885):
+       * If ARG2 < 0, return ARG1, else return ARG0.
+       * (In normal RC IR, cond was Src0, but final_rewrite swaps Src0 and Src2). */
       if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
           !eval_rgb_arg(e, pair, sub, 1, false, s1) ||
           !eval_rgb_arg(e, pair, sub, 2, false, s2))
          return false;
       for (unsigned ch = 0; ch < 3; ch++)
-         result[ch] = (s0[ch] < 0.0f) ? s1[ch] : s2[ch];
+         result[ch] = (s2[ch] < 0.0f) ? s1[ch] : s0[ch];
       return true;
    case RC_OPCODE_CND:
+      /* Paired instruction convention (r300_reg.h L1884):
+       * If ARG2 > 0.5, return ARG0, else return ARG1. */
       if (!eval_rgb_arg(e, pair, sub, 0, false, s0) ||
           !eval_rgb_arg(e, pair, sub, 1, false, s1) ||
           !eval_rgb_arg(e, pair, sub, 2, false, s2))
          return false;
       for (unsigned ch = 0; ch < 3; ch++)
-         result[ch] = (s0[ch] > 0.5f) ? s1[ch] : s2[ch];
+         result[ch] = (s2[ch] > 0.5f) ? s0[ch] : s1[ch];
       return true;
    default:
       e->error = "unhandled RGB pair opcode";
@@ -399,18 +404,22 @@ eval_alpha_op(struct r300_pair_eval *e, struct rc_pair_instruction *pair,
       *result = s0 - floorf(s0);
       return true;
    case RC_OPCODE_CMP:
+      /* Paired instruction convention (r300_reg.h L1885):
+       * If ARG2 < 0, return ARG1, else return ARG0. */
       if (!eval_alpha_arg(e, pair, sub, 0, &s0) ||
           !eval_alpha_arg(e, pair, sub, 1, &s1) ||
           !eval_alpha_arg(e, pair, sub, 2, &s2))
          return false;
-      *result = (s0 < 0.0f) ? s1 : s2;
+      *result = (s2 < 0.0f) ? s1 : s0;
       return true;
    case RC_OPCODE_CND:
+      /* Paired instruction convention (r300_reg.h L1884):
+       * If ARG2 > 0.5, return ARG0, else return ARG1. */
       if (!eval_alpha_arg(e, pair, sub, 0, &s0) ||
           !eval_alpha_arg(e, pair, sub, 1, &s1) ||
           !eval_alpha_arg(e, pair, sub, 2, &s2))
          return false;
-      *result = (s0 > 0.5f) ? s1 : s2;
+      *result = (s2 > 0.5f) ? s0 : s1;
       return true;
    default:
       e->error = "unhandled Alpha pair opcode";
