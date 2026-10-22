@@ -25,6 +25,7 @@
  * varying input keeps the multiply-add from constant-folding away.
  */
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +33,8 @@
 
 #include "nir.h"
 #include "nir_builder.h"
+
+#include "util/u_math.h"
 
 #include "nir_to_rc.h"
 #include "r300_fs.h"
@@ -720,6 +723,44 @@ build_fs_shared_boolean_factoring(bool p_observable)
    return b.shader;
 }
 
+/* Specimen: Tropical Float shared Boolean factoring with fast math controls
+ *   p  = min(a, b)
+ *   y0 = max(p, min(a, c))
+ *   y1 = max(p, min(a, d))
+ */
+static nir_shader *
+build_fs_float_shared_boolean(uint32_t fp_math_ctrl)
+{
+   static const nir_shader_compiler_options options = {0};
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &options, "r300_nir_fs_float_shared_bool");
+   const struct glsl_type *vec4 = glsl_vec4_type();
+   nir_variable *in0 = nir_variable_create(b.shader, nir_var_shader_in, vec4, "in_v");
+   in0->data.location = VARYING_SLOT_VAR0;
+   in0->data.driver_location = 0;
+   in0->data.interpolation = INTERP_MODE_SMOOTH;
+   nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_FragColor");
+   out->data.location = FRAG_RESULT_COLOR;
+   out->data.driver_location = 0;
+
+   nir_def *v = nir_load_var(&b, in0);
+   nir_def *a = nir_channel(&b, v, 0);
+   nir_def *b_val = nir_channel(&b, v, 1);
+   nir_def *c = nir_channel(&b, v, 2);
+   nir_def *d = nir_channel(&b, v, 3);
+
+   b.fp_math_ctrl = fp_math_ctrl;
+   nir_def *p = nir_fmin(&b, a, b_val);
+   nir_def *ac = nir_fmin(&b, a, c);
+   nir_def *ad = nir_fmin(&b, a, d);
+
+   nir_def *y0 = nir_fmax(&b, p, ac);
+   nir_def *y1 = nir_fmax(&b, p, ad);
+
+   nir_store_var(&b, out, nir_vec4(&b, y0, y1, nir_imm_float(&b, 0.0f), nir_imm_float(&b, 1.0f)), 0xf);
+   return b.shader;
+}
+
 /* Specimen 6: XOR with both operands available
  * y = x ^ y (boolean)
  */
@@ -821,27 +862,36 @@ eval_nir_fs_simple(nir_shader *s, const float in_v[4], float out_rgba[4])
                vals[idx].f[c] = lc->value[c].f32;
                vals[idx].b[c] = (lc->value[c].u32 != 0);
             }
+         } else if (instr->type == nir_instr_type_deref) {
+            continue;
          } else if (instr->type == nir_instr_type_intrinsic) {
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
             if (intr->intrinsic == nir_intrinsic_load_deref) {
                nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
-               if (deref && deref->var && deref->var->data.mode == nir_var_shader_in) {
-                  unsigned idx = intr->def.index;
-                  for (unsigned c = 0; c < 4; c++) {
-                     vals[idx].f[c] = in_v[c];
-                     vals[idx].u[c] = (uint32_t)in_v[c];
-                     vals[idx].b[c] = (in_v[c] != 0.0f);
-                  }
+               if (!deref || !deref->var || deref->var->data.mode != nir_var_shader_in) {
+                  ralloc_free(vals);
+                  return false;
+               }
+               unsigned idx = intr->def.index;
+               for (unsigned c = 0; c < 4; c++) {
+                  vals[idx].f[c] = in_v[c];
+                  memcpy(&vals[idx].u[c], &in_v[c], sizeof(float));
+                  vals[idx].b[c] = (in_v[c] != 0.0f);
                }
             } else if (intr->intrinsic == nir_intrinsic_store_deref) {
                nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
-               if (deref && deref->var && deref->var->data.mode == nir_var_shader_out) {
-                  nir_def *src_def = intr->src[1].ssa;
-                  unsigned idx = src_def->index;
-                  for (unsigned c = 0; c < 4; c++) {
-                     out_rgba[c] = vals[idx].f[c];
-                  }
+               if (!deref || !deref->var || deref->var->data.mode != nir_var_shader_out) {
+                  ralloc_free(vals);
+                  return false;
                }
+               nir_def *src_def = intr->src[1].ssa;
+               unsigned idx = src_def->index;
+               for (unsigned c = 0; c < 4; c++) {
+                  out_rgba[c] = vals[idx].f[c];
+               }
+            } else {
+               ralloc_free(vals);
+               return false;
             }
          } else if (instr->type == nir_instr_type_alu) {
             nir_alu_instr *alu = nir_instr_as_alu(instr);
@@ -863,13 +913,13 @@ eval_nir_fs_simple(nir_shader *s, const float in_v[4], float out_rgba[4])
                switch (alu->op) {
                case nir_op_mov:
                   vals[idx].f[c] = s_src[0].f[c];
-                  vals[idx].u[c] = s_src[0].u[c];
+                  memcpy(&vals[idx].u[c], &vals[idx].f[c], sizeof(float));
                   vals[idx].b[c] = s_src[0].b[c];
                   break;
                case nir_op_vec2:
                case nir_op_vec4:
                   vals[idx].f[c] = s_src[c].f[0];
-                  vals[idx].u[c] = s_src[c].u[0];
+                  memcpy(&vals[idx].u[c], &vals[idx].f[c], sizeof(float));
                   vals[idx].b[c] = s_src[c].b[0];
                   break;
                case nir_op_flt:
@@ -888,24 +938,28 @@ eval_nir_fs_simple(nir_shader *s, const float in_v[4], float out_rgba[4])
                   vals[idx].f[c] = vals[idx].b[c] ? 1.0f : 0.0f;
                   break;
                case nir_op_fmin:
-                  vals[idx].f[c] = (s_src[0].f[c] < s_src[1].f[c]) ? s_src[0].f[c] : s_src[1].f[c];
-                  vals[idx].u[c] = (uint32_t)vals[idx].f[c];
+                  vals[idx].f[c] = (float)util_min_num(s_src[0].f[c], s_src[1].f[c]);
+                  memcpy(&vals[idx].u[c], &vals[idx].f[c], sizeof(float));
                   vals[idx].b[c] = (vals[idx].f[c] > 0.0f);
                   break;
                case nir_op_fmax:
-                  vals[idx].f[c] = (s_src[0].f[c] > s_src[1].f[c]) ? s_src[0].f[c] : s_src[1].f[c];
-                  vals[idx].u[c] = (uint32_t)vals[idx].f[c];
+                  vals[idx].f[c] = (float)util_max_num(s_src[0].f[c], s_src[1].f[c]);
+                  memcpy(&vals[idx].u[c], &vals[idx].f[c], sizeof(float));
                   vals[idx].b[c] = (vals[idx].f[c] > 0.0f);
                   break;
                case nir_op_b2f32:
-                  vals[idx].f[c] = s_src[0].b[c] ? 1.0f : 0.0f;
-                  vals[idx].u[c] = s_src[0].b[c] ? 0x3f800000 : 0;
                   vals[idx].b[c] = s_src[0].b[c];
+                  vals[idx].f[c] = s_src[0].b[c] ? 1.0f : 0.0f;
+                  memcpy(&vals[idx].u[c], &vals[idx].f[c], sizeof(float));
                   break;
                default:
-                  break;
+                  ralloc_free(vals);
+                  return false;
                }
             }
+         } else {
+            ralloc_free(vals);
+            return false;
          }
       }
    }
@@ -1035,6 +1089,7 @@ case_nir_shared_bool_pass_direct(void)
    /* Semantic evaluation of actual NIR shader graphs across all 16 inputs {0,1}^4 */
    unsigned tt_matches_orig = 0;
    unsigned tt_matches_fact = 0;
+   bool eval_ok_all = true;
    for (unsigned i = 0; i < 16; i++) {
       bool a = (i >> 0) & 1;
       bool b_val = (i >> 1) & 1;
@@ -1054,8 +1109,9 @@ case_nir_shared_bool_pass_direct(void)
       float out_orig[4] = {0};
       float out_fact[4] = {0};
 
-      eval_nir_fs_simple(s_orig, v, out_orig);
-      eval_nir_fs_simple(s, v, out_fact);
+      bool ok_orig = eval_nir_fs_simple(s_orig, v, out_orig);
+      bool ok_fact = eval_nir_fs_simple(s, v, out_fact);
+      eval_ok_all = eval_ok_all && ok_orig && ok_fact;
 
       if (out_orig[0] == exp_y0 && out_orig[1] == exp_y1)
          tt_matches_orig++;
@@ -1063,13 +1119,18 @@ case_nir_shared_bool_pass_direct(void)
           out_fact[0] == out_orig[0] && out_fact[1] == out_orig[1])
          tt_matches_fact++;
    }
+   CHECK(eval_ok_all,
+         "eval_nir_fs_simple succeeded across all 16 truth-table assignments");
    CHECK(tt_matches_orig == 16,
          "16/16 actual original NIR graph outputs match independent formula");
    CHECK(tt_matches_fact == 16,
          "16/16 actual factored NIR graph outputs match original graph and formula");
 
    /* Evaluator Calibration: deliberately mutate shader by swapping output channels y0 and y1.
-    * The semantic assertion must detect the swap and fail the 16/16 check. */
+    * Use nir_alu_src_rewrite_scalar to preserve intrusive use-list integrity.
+    * Output swap mismatches if and only if y0 != y1, which occurs precisely when
+    * a = 1, b = 0, c != d (i=5: 1,0,1,0 and i=9: 1,0,0,1). The other 14 assignments match.
+    */
    nir_shader *s_mut = nir_shader_clone(NULL, s);
    nir_foreach_function_impl(m_impl, s_mut) {
       nir_foreach_block(m_blk, m_impl) {
@@ -1079,16 +1140,21 @@ case_nir_shared_bool_pass_direct(void)
                if (store->intrinsic == nir_intrinsic_store_deref) {
                   nir_alu_instr *vec = nir_def_as_alu_or_null(store->src[1].ssa);
                   if (vec && (vec->op == nir_op_vec4 || vec->op == nir_op_vec2)) {
-                     nir_alu_src tmp = vec->src[0];
-                     vec->src[0] = vec->src[1];
-                     vec->src[1] = tmp;
+                     nir_scalar s0 = nir_get_scalar(vec->src[0].src.ssa, vec->src[0].swizzle[0]);
+                     nir_scalar s1 = nir_get_scalar(vec->src[1].src.ssa, vec->src[1].swizzle[0]);
+                     nir_alu_src_rewrite_scalar(&vec->src[0], s1);
+                     nir_alu_src_rewrite_scalar(&vec->src[1], s0);
                   }
                }
             }
          }
       }
    }
+   nir_validate_shader(s_mut, "after output swap mutation");
+
    unsigned mut_matches = 0;
+   uint32_t mut_mismatch_mask = 0;
+   bool mut_eval_ok_all = true;
    for (unsigned i = 0; i < 16; i++) {
       float v[4] = {
          ((i >> 0) & 1) ? 0.5f : 1.5f,
@@ -1097,18 +1163,26 @@ case_nir_shared_bool_pass_direct(void)
          ((i >> 3) & 1) ? 3.5f : 4.5f,
       };
       float out_mut[4] = {0};
-      eval_nir_fs_simple(s_mut, v, out_mut);
+      bool ok = eval_nir_fs_simple(s_mut, v, out_mut);
+      mut_eval_ok_all = mut_eval_ok_all && ok;
       bool a = (i >> 0) & 1;
       bool b_val = (i >> 1) & 1;
       bool c = (i >> 2) & 1;
       bool d = (i >> 3) & 1;
       float exp_y0 = (a && (b_val || c)) ? 1.0f : 0.0f;
       float exp_y1 = (a && (b_val || d)) ? 1.0f : 0.0f;
-      if (out_mut[0] == exp_y0 && out_mut[1] == exp_y1)
+      if (out_mut[0] == exp_y0 && out_mut[1] == exp_y1) {
          mut_matches++;
+      } else {
+         mut_mismatch_mask |= (1u << i);
+      }
    }
-   CHECK(mut_matches < 16,
-         "calibration: evaluator detects mutated shader output swap (less than 16/16 matches)");
+   CHECK(mut_eval_ok_all,
+         "eval_nir_fs_simple succeeded for all mutated shader inputs");
+   CHECK(mut_matches == 14,
+         "calibration: output swap mutation matches exactly 14/16 truth table entries");
+   CHECK(mut_mismatch_mask == ((1u << 5) | (1u << 9)),
+         "calibration: output swap mismatches precisely on i=5 (1,0,1,0) and i=9 (1,0,0,1)");
 
    ralloc_free(s_mut);
    ralloc_free(s_orig);
@@ -1140,11 +1214,69 @@ case_nir_shared_bool_pass_direct(void)
     */
    float v_counter[4] = { 2.0f, 0.0f, 2.0f, 0.0f };
    float out_vec[4] = {0};
-   eval_nir_fs_simple(s_vec, v_counter, out_vec);
+   bool counter_ok = eval_nir_fs_simple(s_vec, v_counter, out_vec);
+   CHECK(counter_ok, "eval_nir_fs_simple succeeded for vector swizzle counterexample");
    CHECK(out_vec[0] == 1.0f && out_vec[1] == 1.0f,
          "counterexample preserves correct output (1,1) under fail-closed refusal");
-
    ralloc_free(s_vec);
+
+   /* Test 4: Floating-point shared Boolean with nir_fp_preserve_nan - must refuse to rewrite.
+    * Witness: v = (1.0f, NAN, 0.0f, 0.25f)
+    * Baseline:
+    *   p  = fmin(1.0, NAN) = 1.0
+    *   ac = fmin(1.0, 0.0) = 0.0
+    *   ad = fmin(1.0, 0.25) = 0.25
+    *   y0 = fmax(p, ac) = fmax(1.0, 0.0) = 1.0
+    *   y1 = fmax(p, ad) = fmax(1.0, 0.25) = 1.0  -> output (1.0, 1.0)
+    *
+    * If factored without NaN guard:
+    *   bc = fmax(NAN, 0.0) = 0.0
+    *   bd = fmax(NAN, 0.25) = 0.25
+    *   y0 = fmin(1.0, 0.0) = 0.0
+    *   y1 = fmin(1.0, 0.25) = 0.25               -> output (0.0, 0.25) [CORRUPTED!]
+    */
+   nir_shader *s_nan = build_fs_float_shared_boolean(nir_fp_preserve_nan | nir_fp_preserve_inf);
+   nir_validate_shader(s_nan, "float shared bool with preserve_nan before pass");
+   bool progress_nan = r300_nir_opt_shared_bool(s_nan);
+   CHECK(!progress_nan,
+         "r300_nir_opt_shared_bool refuses float shared factoring when nir_fp_preserve_nan is set");
+
+   float v_nan[4] = { 1.0f, NAN, 0.0f, 0.25f };
+   float out_nan[4] = { 0 };
+   bool eval_nan_ok = eval_nir_fs_simple(s_nan, v_nan, out_nan);
+   CHECK(eval_nan_ok, "eval_nir_fs_simple succeeded for NaN specimen");
+   CHECK(out_nan[0] == 1.0f && out_nan[1] == 1.0f,
+         "fail-closed NaN refusal preserves correct IEEE 754-2019 output (1.0, 1.0)");
+   ralloc_free(s_nan);
+
+   /* Test 5: Floating-point shared Boolean without NaN flags (e.g. nir_fp_preserve_inf)
+    * must rewrite and retain valid fp_math_ctrl on replacement instructions.
+    */
+   nir_shader *s_fp_unflagged = build_fs_float_shared_boolean(nir_fp_preserve_inf);
+   nir_validate_shader(s_fp_unflagged, "float shared bool unflagged before pass");
+   bool progress_fp = r300_nir_opt_shared_bool(s_fp_unflagged);
+   CHECK(progress_fp,
+         "r300_nir_opt_shared_bool rewrites float shared factoring when preserve_nan is absent");
+   nir_validate_shader(s_fp_unflagged, "float shared bool unflagged after pass");
+
+   /* Verify that replacement ALU instructions retain nir_fp_preserve_inf */
+   bool fp_ctrl_retained = false;
+   nir_foreach_function_impl(f_impl, s_fp_unflagged) {
+      nir_foreach_block(f_blk, f_impl) {
+         nir_foreach_instr(f_ins, f_blk) {
+            if (f_ins->type == nir_instr_type_alu) {
+               nir_alu_instr *alu = nir_instr_as_alu(f_ins);
+               if (alu->op == nir_op_fmin || alu->op == nir_op_fmax) {
+                  if (alu->fp_math_ctrl & nir_fp_preserve_inf)
+                     fp_ctrl_retained = true;
+               }
+            }
+         }
+      }
+   }
+   CHECK(fp_ctrl_retained,
+         "replacement float ALU instructions preserve inherited fp_math_ctrl (nir_fp_preserve_inf)");
+   ralloc_free(s_fp_unflagged);
 }
 
 static void
