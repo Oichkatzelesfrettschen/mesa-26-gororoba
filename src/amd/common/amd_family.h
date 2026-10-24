@@ -26,6 +26,14 @@ enum radeon_family
    CHIP_RS400,
    CHIP_RC410,
    CHIP_RS480,
+   /* Silicon identity alias: CHIP_RS485M names the specific RS485M mobile
+    * IGP silicon (Dell Vostro 1000, PCI 1002:5974, subsystem 1028:022a) within
+    * the RS480 family. Because Linux kernel DRM UAPI (RADEON_INFO_DEVICE_ID)
+    * and driver dispatch evaluate the family as CHIP_RS480, CHIP_RS485M
+    * aliases CHIP_RS480 for binary, switch-case, and ioctl compatibility
+    * while providing an explicit named silicon identity.
+    */
+#define CHIP_RS485M CHIP_RS480
    /* R4xx-based cores. (GFX2) */
    CHIP_R420,
    CHIP_R423,

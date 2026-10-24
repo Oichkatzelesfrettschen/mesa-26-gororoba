@@ -22,6 +22,24 @@
  */
 #define R300_PCI_DEVICE_RS48X_5974 0x5974
 
+/* 1002:5974 resolved to the RS485M mobile product on the attended Dell
+ * Vostro 1000 platform (Option ROM "RS485/M BR#26605", DMI "ATI RS485M").
+ * Derived from rs4xx_igp_chip_applicability.tsv row 4.
+ */
+#define R300_PCI_DEVICE_RS485M_5974 0x5974
+#define RS485M_5974 0x5974
+
+/* Silicon identity alias: CHIP_RS485M names the specific RS485M mobile IGP
+ * silicon (Dell Vostro 1000, PCI 1002:5974, subsystem 1028:022a) within the
+ * CHIP_RS480 family. Defined as an alias to CHIP_RS480 for UAPI
+ * (RADEON_INFO_DEVICE_ID) and driver dispatch compatibility while providing
+ * exact semantic binding to our TSV chip-applicability records and fine-grained
+ * family facts.
+ */
+#ifndef CHIP_RS485M
+#define CHIP_RS485M CHIP_RS480
+#endif
+
 /* 1002:5975 is RS482M (Mobility Radeon Xpress 200) in the same RS480
  * family row set.
  */
