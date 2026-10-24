@@ -63,6 +63,23 @@ test_rs482_target_row(void)
 }
 
 static void
+test_rs485m_target_identity(void)
+{
+   struct r300_chip_identity identity;
+   assert(r300_chip_identity_lookup(R300_PCI_VENDOR_ATI,
+                                    R300_PCI_DEVICE_RS485M_5974, &identity));
+   assert(identity.family == CHIP_RS485M);
+   assert(identity.family == CHIP_RS480);
+   assert(identity.die_class == R300_DIE_CLASS_RS400_IGP);
+   assert(identity.family_facts == &r300_rs4xx_igp_family_facts);
+
+   /* RS485M alias macros evaluate to the expected silicon and family values */
+   assert(CHIP_RS485M == CHIP_RS480);
+   assert(R300_PCI_DEVICE_RS485M_5974 == R300_PCI_DEVICE_RS48X_5974);
+   assert(RS485M_5974 == 0x5974);
+}
+
+static void
 test_unknown_identity_refuses(void)
 {
    struct r300_chip_identity identity;
@@ -307,6 +324,7 @@ main(void)
    test_platform_identity();
    test_full_table_resolves();
    test_rs482_target_row();
+   test_rs485m_target_identity();
    test_unknown_identity_refuses();
    test_die_class_partition();
    test_rs482_parse_chipset_caps();
