@@ -2290,6 +2290,7 @@ nir_to_rc(struct nir_shader *s, const struct r300_capabilities *caps,
    bool progress;
    do {
       progress = false;
+      NIR_PASS(progress, s, r300_nir_opt_shared_bool);
       NIR_PASS(progress, s, nir_opt_algebraic);
       NIR_PASS(progress, s, nir_opt_constant_folding);
    } while (progress);

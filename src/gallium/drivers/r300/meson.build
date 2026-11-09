@@ -195,7 +195,8 @@ if with_tests
     'r300-nir-fs-harness',
     executable(
       'r300_nir_fs_harness_test',
-      files('../../../amd/r300/compiler/tests/r300_nir_fs_harness_test.c'),
+      files('../../../amd/r300/compiler/tests/r300_nir_fs_harness_test.c',
+            '../../../amd/r300/compiler/tests/r300_pair_eval.c'),
       c_args : r300_test_c_args,
       include_directories : [
         inc_src, inc_include, inc_gallium, inc_gallium_aux, inc_gallium_drivers,

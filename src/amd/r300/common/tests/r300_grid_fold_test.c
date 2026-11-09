@@ -82,6 +82,20 @@ test_fp24_index_bounds(void)
    CHECK(!r300_grid_strided_index_exact((UINT64_C(1) << 63) + 1, 2, 0),
          "an affine product that wraps to zero in uint64 refuses");
 
+   /* Power-of-two alignment factor tracking checks */
+   CHECK(r300_grid_strided_index_exact(131073, 4, 0),
+         "power-of-two stride=4 offset=0 admits 131073 invocations (max product 524288)");
+   CHECK(!r300_grid_strided_index_exact(131074, 4, 0),
+         "power-of-two stride=4 offset=0 refuses 131074 invocations");
+   CHECK(r300_grid_strided_index_exact(131072, 4, 4),
+         "power-of-two stride=4 offset=4 admits 131072 invocations");
+   CHECK(!r300_grid_strided_index_exact(131073, 4, 4),
+         "power-of-two stride=4 offset=4 refuses 131073 invocations");
+   CHECK(r300_grid_strided_index_exact(32768, 4, 1),
+         "unaligned offset=1 with stride=4 admits 32768 invocations");
+   CHECK(!r300_grid_strided_index_exact(32769, 4, 1),
+         "unaligned offset=1 with stride=4 refuses 32769 invocations");
+
    const uint64_t raster_capacity =
       (uint64_t)R300_RASTER_AXIS_CAP * R300_RASTER_AXIS_CAP;
    CHECK(r300_grid_index_exact(R300_GRID_INDEX_NONE,
