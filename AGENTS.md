@@ -946,6 +946,39 @@ Enforce a NIR-first compiler direction across shader, frontend, and compiler flo
 3. Map every encountered TGSI surface with tooling (`rg`, `clangd` cross-references, structural sweeps), identify its ownership and call boundaries, and migrate and rewire it toward pure NIR.
 4. Scope migration patches by mechanism: one boundary or class of TGSI dependency per patch where practical.
 
+## Build, test, and lint commands
+
+Use the repository's `build-infra` entrypoint for day-to-day work.
+
+| Task | Command |
+|---|---|
+| List supported profiles/host envs | `make -C build-infra list` |
+| Host/toolchain audit before building | `make -C build-infra audit PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` |
+| Configure + build + install (profile lane) | `make -C build-infra clean configure build install PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` |
+| Incremental rebuild (warm lane) | `make -C build-infra rebuild-5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` |
+| Run Meson/Ninja test target for current builddir | `make -C build-infra test PROFILE=5_terakan_norusticl_release_x86_64v1-clang22-distcc-cache HOSTENV=vostro1000-x86-64-v1-clang22-ccache-distcc` |
+| Run full Meson tests directly | `meson test -C <builddir> --print-errorlogs` |
+| Run a single Meson test | `meson test -C <builddir> --list` then `meson test -C <builddir> <test_name> --print-errorlogs` |
+| Run one r3v validation probe | `VK_ICD_FILENAMES=<r3v_icd.json> DEQP_VK=<deqp-vk> OUT=/var/tmp/r3v-vulkan-surface bash build-infra/conformance/r3v-vulkan-surface/run.sh --check` |
+| Shell script lint pass used in CI | `./.gitlab-ci/run-shellcheck.sh` |
+| CI Python checks (`pytest` + `flake8`) | `./.gitlab-ci/run-pytest.sh` |
+| CI config lint checks | `python3 bin/toml_lint.py && ./.gitlab-ci/run-yamllint.sh` |
+
+## High-level architecture
+
+This repository is a Mesa 26.x fork with custom driver and build lanes layered on top of upstream Mesa structure.
+
+| Area | Role |
+|---|---|
+| `src/amd/terascale/vulkan/` | Terakan Vulkan driver lane for TeraScale-era hardware work. |
+| `src/gallium/drivers/r300/` and `src/gallium/drivers/r600/` | Gallium driver backends touched by fork-specific bring-up and conformance work. |
+| `src/gallium/auxiliary/vl/` | Shared video/decode infrastructure used by r300/r600 video paths (including g3dvl-related work). |
+| `src/amd/r300/vulkan/` | R300 Vulkan research lane and probe tooling (`tests/` wrappers). |
+| `build-infra/` | Canonical orchestration layer (Makefile + Meson native profiles + host env overlays). Meson owns configure/build internals; Make owns profile/host selection and orchestration targets. |
+| `docs/submittingpatches.rst` | Upstream Mesa patch/testing expectations used as review baseline (component prefixes, tested commits, clean history). |
+
+Important boundary: this repo can reference sibling `steinmarder` evidence, but normal Mesa build/install/test flows must stay standalone and must not depend on sibling paths at runtime.
+
 ## Key subsystems
 
 Navigate Gallium drivers and shared compiler components via standard Mesa layout conventions under `src/gallium/` and `src/compiler/`. Access the two fork-specific out-of-Gallium Vulkan drivers under `src/amd/`:
